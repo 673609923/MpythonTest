@@ -528,7 +528,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
         self.setup_refresh_mac_sn_timer()
         self.setup_refresh_carve_timer()
 
-        self.setWindowTitle(__NAME__ + __MODEL__ + "     < 版本：1.1 >")
+        self.setWindowTitle(__NAME__ + __MODEL__ + "     < 版本：1.2 >")
 
         # 加载config
         external_file_path = os.path.join(os.getcwd(), 'config\hhconfig.json')

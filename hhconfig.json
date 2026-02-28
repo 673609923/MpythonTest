@@ -1,0 +1,1 @@
+{"light_min": 10.0, "light_max": 700.0, "sound_min": 50.0, "sound_max": 1000.0, "mag_head_min": -5000.0, "mag_head_max": 5000.0, "acc_min": -1.0, "acc_max": 1.0, "gyroscope_min": -10.0, "gyroscope_max": 10.0}

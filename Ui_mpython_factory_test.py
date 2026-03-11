@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-# Form implementation generated from reading ui file 'E:\desktop\项目\掌控板测试软件\MpythonTest_7001\MpythonTest_7001\mpython_factory_test.ui'
+# Form implementation generated from reading ui file 'E:\desktop\mpythonTest\MpythonTest\mpython_factory_test.ui'
 #
 # Created by: PyQt5 UI code generator 5.11.2
 #
@@ -114,6 +114,7 @@ class Ui_MainWindow(object):
         self.horizontalLayout_8.addWidget(self.groupBox)
         self.gridLayout.addLayout(self.horizontalLayout_8, 2, 0, 1, 1)
         self.horizontalLayout_3 = QtWidgets.QHBoxLayout()
+        self.horizontalLayout_3.setContentsMargins(-1, 0, 10, -1)
         self.horizontalLayout_3.setSpacing(6)
         self.horizontalLayout_3.setObjectName("horizontalLayout_3")
         self.groupBox_5 = QtWidgets.QGroupBox(self.func_test_tab)
@@ -249,32 +250,41 @@ class Ui_MainWindow(object):
         self.manual_change_Button.setObjectName("manual_change_Button")
         self.verticalLayout_9.addWidget(self.manual_change_Button)
         self.horizontalLayout_3.addWidget(self.groupBox_6)
-        self.groupBox_7 = QtWidgets.QGroupBox(self.func_test_tab)
-        font = QtGui.QFont()
-        font.setFamily("微软雅黑")
-        font.setPointSize(11)
-        self.groupBox_7.setFont(font)
-        self.groupBox_7.setTitle("")
-        self.groupBox_7.setObjectName("groupBox_7")
-        self.verticalLayout_22 = QtWidgets.QVBoxLayout(self.groupBox_7)
-        self.verticalLayout_22.setObjectName("verticalLayout_22")
-        self.retest_Button = QtWidgets.QPushButton(self.groupBox_7)
+        self.retest_Button = QtWidgets.QPushButton(self.func_test_tab)
         self.retest_Button.setEnabled(True)
         sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Ignored)
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.retest_Button.sizePolicy().hasHeightForWidth())
         self.retest_Button.setSizePolicy(sizePolicy)
-        self.retest_Button.setStyleSheet("font: 14pt \"微软雅黑\";\n"
-"color: rgb(255, 255, 255);\n"
-"border-radius: 10px;\n"
-"background-color: qlineargradient(spread:repeat, x1:0, y1:0, x2:1, y2:0, stop:0 rgba(53, 119, 144, 255), stop:1 rgba(255, 225, 255, 255));\n"
+        self.retest_Button.setMaximumSize(QtCore.QSize(16777215, 60))
+        self.retest_Button.setToolTip("")
+        self.retest_Button.setStyleSheet("/* 默认状态 - 未按下且未悬停 */\n"
+"QPushButton {\n"
+"    font: 13pt \"微软雅黑\";\n"
+"    border-radius: 25px;\n"
+"    color: rgb(10, 10, 10);\n"
+"    background-color: qlineargradient(spread:repeat, x1:0, y1:0, x2:1, y2:0, \n"
+"        stop:0 rgba(255, 170, 127, 200), \n"
+"        stop:1 rgba(255, 225, 255, 255));\n"
+"}\n"
 "\n"
+"/* 悬停状态 - 鼠标悬停但未按下 */\n"
+"QPushButton:hover {\n"
+"    background-color: qlineargradient(spread:repeat, x1:0, y1:0, x2:1, y2:0, \n"
+"        stop:0 rgba(235, 150, 107, 230),   /* 更深的橙色 */\n"
+"        stop:1 rgba(235, 195, 235, 255));  /* 更深的浅紫色 */\n"
+"}\n"
 "\n"
-"")
+"/* 按下状态 - 鼠标按下 */\n"
+"QPushButton:pressed {\n"
+"    background-color: qlineargradient(spread:repeat, x1:0, y1:0, x2:1, y2:0, \n"
+"        stop:0 rgba(220, 135, 90, 255),    /* 更深的橙褐色 */\n"
+"        stop:1 rgba(220, 180, 220, 255));  /* 更深的紫灰色 */\n"
+"\n"
+"}")
         self.retest_Button.setObjectName("retest_Button")
-        self.verticalLayout_22.addWidget(self.retest_Button)
-        self.horizontalLayout_3.addWidget(self.groupBox_7)
+        self.horizontalLayout_3.addWidget(self.retest_Button)
         self.gridLayout.addLayout(self.horizontalLayout_3, 0, 0, 1, 1)
         self.stackedWidget = QtWidgets.QStackedWidget(self.func_test_tab)
         self.stackedWidget.setObjectName("stackedWidget")
@@ -5422,6 +5432,10 @@ class Ui_MainWindow(object):
         self.v260Zkb_tn_widget.setSizePolicy(sizePolicy)
         self.v260Zkb_tn_widget.setMinimumSize(QtCore.QSize(80, 80))
         self.v260Zkb_tn_widget.setMaximumSize(QtCore.QSize(16777215, 80))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        self.v260Zkb_tn_widget.setFont(font)
         self.v260Zkb_tn_widget.setStyleSheet("background-color: rgb(203, 203, 203);")
         self.v260Zkb_tn_widget.setObjectName("v260Zkb_tn_widget")
         self.verticalLayout_81 = QtWidgets.QVBoxLayout(self.v260Zkb_tn_widget)
@@ -6220,7 +6234,6 @@ class Ui_MainWindow(object):
         self.groupBox_6.setTitle(_translate("MainWindow", "程序下载"))
         self.change_test_prj_Button.setText(_translate("MainWindow", "转测试程序"))
         self.manual_change_Button.setText(_translate("MainWindow", "转出厂程序"))
-        self.retest_Button.setToolTip(_translate("MainWindow", "<html><head/><body><p>快捷键数字0</p></body></html>"))
         self.retest_Button.setText(_translate("MainWindow", "重新测试"))
         self.func_test_groupBox.setTitle(_translate("MainWindow", "测试项目"))
         self.x7001_sound_value_label.setText(_translate("MainWindow", "0"))

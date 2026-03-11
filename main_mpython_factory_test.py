@@ -424,8 +424,6 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             __NAME__ = "< TS260-掌控板 >    "
             g_MesTableName = "v260Zkb_blank"
 
-
-
         elif g_project == ProjectType.v7005.value:
             __NAME__ = "< 7005-掌控板-学境 >    "
             if g_test_mode == 0:
@@ -928,6 +926,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
                 else:
                     QTimer.singleShot(0, lambda: g_MyWin.LogShowSnMac(f"7009乐动掌控 SN绑定MAC失败!!! 没有找到MAC地址,无法绑定,请重新返回测试至成功过站!", "red"))
                     QMessageBox.critical(self, "错误", f"7009乐动掌控 SN绑定MAC失败!!! 没有找到MAC地址,无法绑定,请重新返回测试至成功过站!")
+
             # 7001 小学版
             if g_test_mode == 2:
                 mac = str
@@ -1596,6 +1595,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             self.test_func_thread.serial.readyRead.disconnect()
         except:
             pass
+
         self.test_func_thread.repl.interrupt()
         self.test_func_thread.sleep(1)
         self.test_func_thread.repl.interrupt()

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-# Form implementation generated from reading ui file 'E:\desktop\项目\掌控板测试软件\MpythonTest_7001\MpythonTest_7001\bindingSn.ui'
+# Form implementation generated from reading ui file 'E:\desktop\mpythonTest\MpythonTest\bindingSn.ui'
 #
 # Created by: PyQt5 UI code generator 5.11.2
 #
@@ -12,6 +12,7 @@ class Ui_bindingSn(object):
     def setupUi(self, bindingSn):
         bindingSn.setObjectName("bindingSn")
         bindingSn.resize(444, 127)
+        bindingSn.setToolTip("")
         self.gridLayout = QtWidgets.QGridLayout(bindingSn)
         self.gridLayout.setObjectName("gridLayout")
         self.carve_serial_groupBox_5 = QtWidgets.QGroupBox(bindingSn)
@@ -24,6 +25,10 @@ class Ui_bindingSn(object):
         font.setFamily("微软雅黑")
         font.setPointSize(11)
         self.carve_serial_groupBox_5.setFont(font)
+        self.carve_serial_groupBox_5.setToolTip("")
+        self.carve_serial_groupBox_5.setStatusTip("")
+        self.carve_serial_groupBox_5.setWhatsThis("")
+        self.carve_serial_groupBox_5.setTitle("")
         self.carve_serial_groupBox_5.setObjectName("carve_serial_groupBox_5")
         self.horizontalLayout_16 = QtWidgets.QHBoxLayout(self.carve_serial_groupBox_5)
         self.horizontalLayout_16.setObjectName("horizontalLayout_16")
@@ -57,8 +62,7 @@ class Ui_bindingSn(object):
 
     def retranslateUi(self, bindingSn):
         _translate = QtCore.QCoreApplication.translate
-        bindingSn.setWindowTitle(_translate("bindingSn", " "))
-        self.carve_serial_groupBox_5.setTitle(_translate("bindingSn", "请输入 20 位数的SN码"))
+        bindingSn.setWindowTitle(_translate("bindingSn", "请输入SN码"))
         self.SnLineEdit_MAC.setPlaceholderText(_translate("bindingSn", "请输入SN码"))
         self.btnEnter.setText(_translate("bindingSn", "确定(Enter)"))
 

@@ -11,7 +11,10 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string> </string>
+   <string>请输入SN码</string>
+  </property>
+  <property name="toolTip">
+   <string/>
   </property>
   <layout class="QGridLayout" name="gridLayout">
    <item row="0" column="0">
@@ -28,8 +31,17 @@
        <pointsize>11</pointsize>
       </font>
      </property>
+     <property name="toolTip">
+      <string/>
+     </property>
+     <property name="statusTip">
+      <string/>
+     </property>
+     <property name="whatsThis">
+      <string/>
+     </property>
      <property name="title">
-      <string>请输入 20 位数的SN码</string>
+      <string/>
      </property>
      <layout class="QHBoxLayout" name="horizontalLayout_16">
       <item>

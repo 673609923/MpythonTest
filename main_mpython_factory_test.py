@@ -37,6 +37,9 @@ from PyQt5.QtGui import QRegExpValidator
 from PyQt5.QtCore import QRegExp
 import mysql.connector
 from mysql.connector import Error
+from datetime import datetime
+from pathlib import Path
+
 
 class ProjectType(Enum):
     x7001 = 0
@@ -67,6 +70,30 @@ class StartBindingSn(QDialog):
 
     finish_signal = pyqtSignal()  # 完成信号
 
+    def set_english_input_method(self):
+        """使用Windows API强制切换英文输入法"""
+        try:
+            # 获取当前前景窗口句柄
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+
+            # 获取当前线程ID
+            thread_id = ctypes.windll.user32.GetWindowThreadProcessId(hwnd, None)
+
+            # 加载英文键盘布局（美式英语）
+            english_layout = ctypes.windll.user32.LoadKeyboardLayoutW("00000409", 0)
+
+            # 激活英文键盘布局
+            result = ctypes.windll.user32.ActivateKeyboardLayout(english_layout, 0)
+
+            if result:
+                print("成功切换到英文输入法")
+            else:
+                print("切换输入法失败")
+
+        except Exception as e:
+            print(f"切换输入法失败: {e}")
+
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.ui = Ui_bindingSn()
@@ -89,7 +116,7 @@ class StartBindingSn(QDialog):
 
         self.setFixedSize(self.size())  # 固定为当前大小
         self.setModal(False)  # 明确设置为非模态
-
+        self.set_english_input_method()
         self.ui.SnLineEdit_MAC.returnPressed.connect(lambda: self.on_btnEnter_clicked())
 
 
@@ -102,7 +129,8 @@ class StartBindingSn(QDialog):
         snlen = int(len(sn))
 
         if snlen > 0:
-            if snlen == 20:
+            if (snlen == 20 and g_project == ProjectType.c7001.value or g_project == ProjectType.x7001.value) or\
+                (snlen >= 17 and snlen <= 20 and g_project == ProjectType.v7009.value):
                 g_SnCode = str(sn)
                 self.ui.SnLineEdit_MAC.returnPressed.disconnect()
                 self.close()
@@ -316,7 +344,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             return False
 
         try:
-            if g_test_mode == 1 and g_project == ProjectType.x7001.value or g_project == ProjectType.c7001.value:
+            if g_test_mode == 1 and g_project == ProjectType.x7001.value or g_project == ProjectType.c7001.value or g_project == ProjectType.v7009.value:
                 if not g_SnCode:
                     QTimer.singleShot(0, lambda: g_MyWin.LogShow("SN为空 上传MES数据失败", "red"))
                     return False
@@ -336,7 +364,6 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
                     # 提交事务
                     connection.commit()
 
-                    #QTimer.singleShot(0, lambda: g_MyWin.LogShow(f"MES上传数据成功: {info}", "green"))
                     QTimer.singleShot(0, lambda: g_MyWin.LogShow(f"MAC: {mac} 绑定 SN: {g_SnCode} 上传数据成功", "green"))
                     return True
 
@@ -518,7 +545,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
         self.on_refresh_func_Button_clicked()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.on_refresh_func_Button_clicked)
-        self.timer.start(1000)  # 1000毫秒=1秒
+        self.timer.start(100)
 
         # 镭雕 槽函数                                                           
         self.iPLineEdit.setText(self.get_local_ip())  # 镭雕机的IP地址
@@ -526,14 +553,12 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
         self.setup_refresh_mac_sn_timer()
         self.setup_refresh_carve_timer()
 
-        self.setWindowTitle(__NAME__ + __MODEL__ + "     < 版本：1.2 >")
+        self.setWindowTitle(__NAME__ + __MODEL__ + "     < 版本：1.3 >")
 
         # 加载config
         external_file_path = os.path.join(os.getcwd(), 'config\hhconfig.json')
         self.load_configure(external_file_path)
         self.ui_parameter_show()
-
-
 
 
 
@@ -1125,12 +1150,12 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
 
 
             if self.test_func_thread.serial.isOpen():
-                if g_project == ProjectType.c7001.value or g_project == ProjectType.x7001.value and g_test_mode == 1:
+                if g_project == ProjectType.c7001.value or g_project == ProjectType.x7001.value or g_project == ProjectType.v7009.value and g_test_mode == 1:
                     self.bindingSnWin = StartBindingSn(parent=self)
                     self.bindingSnWin.show()
                     self.bindingSnWin.activateWindow()  # 激活窗口到最前
         else:
-            if hasattr(self, 'bindingSnWin') and g_project == ProjectType.c7001.value or g_project == ProjectType.x7001.value and g_test_mode == 1:
+            if hasattr(self, 'bindingSnWin') and g_project == ProjectType.c7001.value or g_project == ProjectType.x7001.value or g_project == ProjectType.v7009.value and g_test_mode == 1:
                 self.bindingSnWin.close()               # 关闭窗口
                 self.bindingSnWin.deleteLater()         # 安全销毁对象
                 self.bindingSnWin = None                # 清除引用
@@ -1504,52 +1529,10 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
     # 重测按键按下事件
     @pyqtSlot()
     def on_retest_Button_clicked(self):
-        self.test_func_thread.repl.write_cmdline("machine.reset()")
 
-        # 关闭串口事件处理
-        self.is_funcTest_started = False
-        self.test_func_thread.serial.close()
-        self.test_func_thread.timer.stop()
-        self.test_func_thread.quit()
-        self.test_func_thread.terminate()
-        self.test_func_thread.wait()
-        self.clear_all_TestItem()
-
+        self.on_com_func_Button_clicked()
         time.sleep(1)
-
-        self.is_func_serial_opened = True
-        self.test_func_thread.IS_ALL_FUNCT_PASS = False
-        self.test_func_thread.wifi_emit = False
-        self.test_func_thread.signal_sda_scl_emit = False
-        self.test_func_thread.Tracking_emit = False
-        self.test_func_thread.ultrasound_emit= False
-        self.test_func_thread.rfid_emit = False
-        self.test_func_thread.pot_emit = False
-        self.test_func_thread.Tracking_On = False
-        self.test_func_thread.Tracking_Off = False
-        self.test_func_thread.ultrasound_far = False
-        self.test_func_thread.ultrasound_near = False
-        self.test_func_thread.pot_min = False
-        self.test_func_thread.pot_max = False
-        self.test_func_thread.IS_SCL_SDA_PASS = False
-        self.test_func_thread.IS_RGB_PASS = False
-        self.test_func_thread.IS_FAN_PASS = False
-        self.test_func_thread.IS_MOTOR_PASS = False
-        self.test_func_thread.IS_WATERPUMP_PASS = False
-        self.test_func_thread.IS_SERVO_PASS = False
-        self.test_func_thread.IS_OLED_PASS = False
-        self.test_func_thread.IS_M2PIN_PASS = False
-        self.test_func_thread.IS_PINOUT_PASS = False
-        self.test_func_thread.IS_BUZZ_PASS = False
-        self.test_func_thread.IS_AUDIO_PASS = False
-        self.test_func_thread.IS_CAMERA_PASS = False
-        self.test_func_thread.light_emit = False
-        self.test_func_thread.sound_emit = False
-        self.clear_all_TestItem()
-        self.start_test_thread_func(self)
-
-
-
+        self.on_com_func_Button_clicked()
 
 
     def change_main_and_upload_mac(self, str):
@@ -4468,7 +4451,6 @@ class FuncTest_Thread(QThread):
 
 
 
-
 # 读取MAC线程
 class ReadMac_Thread(QThread):
     updataMac = pyqtSignal(str)
@@ -4585,14 +4567,14 @@ class TestInfo_Thread(QThread):
 
         while attempt < max_retries:
             # 先创建并配置串口对象，再打开
-            self.serial = QSerialPort()  # 串口类
+            self.serial = QSerialPort()                             # 串口类
             self.repl = Repl(self.serial)
-            self.serial.setPortName(self.port)  # 设置端口
-            self.serial.setBaudRate(115200)  # 设置波特率
-            self.serial.setDataBits(QSerialPort.Data8)  # 数据位
-            self.serial.setParity(QSerialPort.NoParity)  # 校验位
-            self.serial.setStopBits(QSerialPort.OneStop)  # 停止位
-            self.serial.setFlowControl(QSerialPort.NoFlowControl)  # 设置流量控制
+            self.serial.setPortName(self.port)                      # 设置端口
+            self.serial.setBaudRate(115200)                         # 设置波特率
+            self.serial.setDataBits(QSerialPort.Data8)              # 数据位
+            self.serial.setParity(QSerialPort.NoParity)             # 校验位
+            self.serial.setStopBits(QSerialPort.OneStop)            # 停止位
+            self.serial.setFlowControl(QSerialPort.NoFlowControl)   # 设置流量控制
 
             # 尝试打开串口
             if self.serial.open(QIODevice.ReadWrite):
@@ -4724,29 +4706,70 @@ def verify(machine_code, key):
 
 
 
-def check_or_create_config(input_str):
 
-    # 构建配置文件路径
-    config_path = os.path.join(os.path.expanduser("~"), "AppData", f"{get_motherboard_serial()}.ini")
+def get_file_creation_time(file_path):
+    """
+    获取文件的修改时间，返回格式化的年月日时间字符串
 
-    # 如果文件不存在，创建空文件并返回False
-    if not os.path.exists(config_path):
-        os.makedirs(os.path.dirname(config_path), exist_ok=True)  # 确保目录存在
-        with open(config_path, 'w') as f:
-            pass  # 创建空文件
-        return False
+    Args:
+        file_path (str): 文件的路径
 
-    # 文件存在，读取内容并比较
-    with open(config_path, 'r') as f:
-        file_content = f.read().strip()  # 读取并去除首尾空白字符
+    Returns:
+        str: 格式化的时间字符串，格式为 'YYYY-MM-DD HH:MM:SS'
+             如果获取失败，返回相应的错误信息
+    """
+    try:
+        # 检查文件是否存在
+        if not os.path.exists(file_path):
+            return " "
 
-    # 比较文件内容与输入字符串
-    return file_content == input_str
+        # 获取文件状态信息
+        file_stat = os.stat(file_path)
+
+        # 获取最新修改时间戳 (st_mtime 是最后修改时间)
+        timestamp = file_stat.st_mtime
+
+        # 将时间戳转换为 datetime 对象
+        dt_object = datetime.fromtimestamp(timestamp)
+
+        # 格式化为年月日时分秒字符串
+        formatted_time = dt_object.strftime('%Y-%m-%d %H:%M:%S')
+
+        return formatted_time
+
+    except PermissionError:
+        return " "
+    except Exception as e:
+        return " "
+
 
 
 
 
 class StartHmiWindow(QDialog):
+
+    def check_or_create_config(self,input_str):
+
+        # 构建配置文件路径
+        config_path = os.path.join(os.path.expanduser("~"), "AppData", f"{get_motherboard_serial()}.ini")
+
+        # 如果文件不存在，创建空文件并返回False
+        if not os.path.exists(config_path):
+            os.makedirs(os.path.dirname(config_path), exist_ok=True)  # 确保目录存在
+            with open(config_path, 'w') as f:
+                pass  # 创建空文件
+            return False
+
+        # 文件存在，读取内容并比较
+        with open(config_path, 'r') as f:
+            file_content = f.read().strip()  # 读取并去除首尾空白字符
+
+        if file_content == input_str:
+            t_path = get_file_creation_time(config_path)
+            self.setWindowTitle('注册时间：' + t_path)
+            return True
+        else:
+            return False
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -4775,7 +4798,7 @@ class StartHmiWindow(QDialog):
         key = generate_key(machine_code)        # 生成的密钥
 
         # 第一次运行（文件不存在）
-        result = check_or_create_config(key)
+        result = self.check_or_create_config(key)
 
         if result:
             self.ui.stackedWidget.setCurrentIndex(0)
@@ -4789,7 +4812,7 @@ class StartHmiWindow(QDialog):
             lambda index: (
                 # 处理index=6的情况
                 (self.ui.combo_stage.clear(),
-                 self.ui.combo_stage.addItems(["7008_1956主控", "7009_乐动掌控2.0"]),
+                 self.ui.combo_stage.addItems(["7008_1956主控"]),
                  self.ui.combo_stage.setCurrentIndex(0),
                  self.ui.combo_stage.setEnabled(True)) if index == 6 else
                 # 处理其他情况
@@ -4822,7 +4845,7 @@ class StartHmiWindow(QDialog):
             config_path = os.path.join(os.path.expanduser("~"), "AppData", f"{get_motherboard_serial()}.ini")
             with open(config_path, 'w') as f:
                 f.write(key)
-            result = check_or_create_config(key)
+            result = self.check_or_create_config(key)
             if result:
                 self.ui.stackedWidget.setCurrentIndex(0)
             else:
@@ -4844,12 +4867,12 @@ class StartHmiWindow(QDialog):
         g_test_mode = self.ui.combo_stage.currentIndex()
         self.close()
 
+
+
         g_MyWin = MyMainWindow()
         g_MyWin.show()
         g_MyWin.raise_()  # 提升到最上层（类似 Alt+Tab 选中）
         g_MyWin.activateWindow()  # 激活窗口（获取焦点）
-
-
 
 
 

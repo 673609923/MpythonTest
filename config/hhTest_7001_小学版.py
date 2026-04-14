@@ -206,8 +206,7 @@ def check_list_length(lst, expected_length):
 
 while True:
     g_GetDataLock.acquire()
-    
-    
+
     if btn_a and btn_b:
         time.sleep(0.5)
         for freq in range(0, 3, 1):
@@ -272,7 +271,7 @@ while True:
     # SDA/SCL
     print('SdaScl:%d' % SdaScl_value)            
 
-    #左右电机转动
+    # 左右电机转动
     #encoder_motor.move(-60,60)
     
     # 风扇

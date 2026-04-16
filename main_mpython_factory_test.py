@@ -344,7 +344,8 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             return False
 
         try:
-            if g_test_mode == 1 and g_project == ProjectType.x7001.value or g_project == ProjectType.c7001.value or g_project == ProjectType.v7009.value:
+            if (g_test_mode == 1 and g_project == ProjectType.x7001.value or g_project == ProjectType.c7001.value) or\
+                g_test_mode == 2 and g_project == ProjectType.v7009.value:
                 if not g_SnCode:
                     QTimer.singleShot(0, lambda: g_MyWin.LogShow("SN为空 上传MES数据失败", "red"))
                     return False
@@ -470,7 +471,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             __NAME__ = "< 7009-乐动掌控2.0 >    "
             if g_test_mode == 0:
                 g_MesTableName = "7009_blank"
-            elif g_test_mode == 1:
+            elif g_test_mode == 1 or g_test_mode == 2:
                 g_MesTableName = "7009_final"
 
         elif g_project == ProjectType.sn_mac.value:
@@ -492,10 +493,18 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
                 g_MesTableName = "7001_chuzhong_final"
 
         if g_project != ProjectType.sn_mac.value:
-            if g_test_mode == 0:
-                __MODEL__ = "(半成品测试)"
-            elif g_test_mode == 1:
-                __MODEL__ = "(成品测试)"
+            if g_project == ProjectType.v7009.value:
+                if g_test_mode == 0:
+                    __MODEL__ = "(半成品测试)"
+                elif g_test_mode == 1:
+                    __MODEL__ = "(盛思_成品测试)"
+                elif g_test_mode == 2:
+                    __MODEL__ = "(讯飞_成品测试)"
+            else:
+                if g_test_mode == 0:
+                    __MODEL__ = "(半成品测试)"
+                elif g_test_mode == 1:
+                    __MODEL__ = "(成品测试)"
         else:
             __MODEL__ = ""
 
@@ -553,7 +562,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
         self.setup_refresh_mac_sn_timer()
         self.setup_refresh_carve_timer()
 
-        self.setWindowTitle(__NAME__ + __MODEL__ + "     < 版本：1.3 >")
+        self.setWindowTitle(__NAME__ + __MODEL__ + "     < 版本：1.4 >")
 
         # 加载config
         external_file_path = os.path.join(os.getcwd(), 'config\hhconfig.json')
@@ -605,7 +614,8 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             with open(path, "r") as f:
                 CONFIG_DICT = json.load(f)
         except Exception as e:
-            QMessageBox.critical(self, '错误', '加载配置文件错误!\n{}'.format(e))
+            #QMessageBox.critical(self, '错误', '加载配置文件错误!\n{}'.format(e))
+            return
 
     def save_configure(self, path):
         global CONFIG_DICT
@@ -1150,12 +1160,12 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
 
 
             if self.test_func_thread.serial.isOpen():
-                if g_project == ProjectType.c7001.value or g_project == ProjectType.x7001.value or g_project == ProjectType.v7009.value and g_test_mode == 1:
+                if g_project == ProjectType.c7001.value or g_project == ProjectType.x7001.value or g_project == ProjectType.v7009.value and g_test_mode == 2:
                     self.bindingSnWin = StartBindingSn(parent=self)
                     self.bindingSnWin.show()
                     self.bindingSnWin.activateWindow()  # 激活窗口到最前
         else:
-            if hasattr(self, 'bindingSnWin') and g_project == ProjectType.c7001.value or g_project == ProjectType.x7001.value or g_project == ProjectType.v7009.value and g_test_mode == 1:
+            if hasattr(self, 'bindingSnWin') and g_project == ProjectType.c7001.value or g_project == ProjectType.x7001.value or g_project == ProjectType.v7009.value and g_test_mode == 2:
                 self.bindingSnWin.close()               # 关闭窗口
                 self.bindingSnWin.deleteLater()         # 安全销毁对象
                 self.bindingSnWin = None                # 清除引用
@@ -4815,6 +4825,11 @@ class StartHmiWindow(QDialog):
                  self.ui.combo_stage.addItems(["7008_1956主控"]),
                  self.ui.combo_stage.setCurrentIndex(0),
                  self.ui.combo_stage.setEnabled(True)) if index == 6 else
+                # 处理index=5的情况
+                (self.ui.combo_stage.clear(),
+                 self.ui.combo_stage.addItems(["半成品测试", "盛思_成品测试", "讯飞_成品测试"]),
+                 self.ui.combo_stage.setCurrentIndex(0),
+                 self.ui.combo_stage.setEnabled(True)) if index == 5 else
                 # 处理其他情况
                 (self.ui.combo_stage.clear(),
                  self.ui.combo_stage.addItems(["半成品测试", "成品测试"]),

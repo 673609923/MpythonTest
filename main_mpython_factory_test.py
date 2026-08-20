@@ -22,7 +22,6 @@ import threading
 import time
 import keyboard
 import subprocess
-import json
 from repl import *
 import requests
 import hashlib
@@ -39,23 +38,56 @@ import mysql.connector
 from mysql.connector import Error
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Callable, Dict, Optional, Tuple,List
+import configparser
+import secrets
+from typing import Tuple, Dict
+import platform
+import datetime
+from typing import Union
+import random
 
+
+# 全局互斥锁，所有数据库操作共用这一把锁
+DB_LOCK = threading.Lock()
 
 class ProjectType(Enum):
-    x7001 = 0
-    c7001 = 1
-    v7005 = 2
-    m7005 = 3
-    v7007 = 4
-    v7009 = 5
-    sn_mac = 6
-    v260Teach = 7
-    v260Zkb = 8
+    v260Zkb   = (0, 7)
+    x7001     = (1, 0)
+    c7001     = (2, 1)
+    v260Teach = (3, 6)
+    v7005     = (4, 2)
+    m7005     = (5, 3)
+    v7007     = (6, 4)
+    v7009     = (7, 5)
+    v7010     = (8, -2)
+    v7011     = (9, -3)
+    d7011     = (10, -4)
+    sn_mac    = (11, -1)
+
+    @property
+    def val1(self):
+        return self.value[0]
+
+    @property
+    def val2(self):
+        return self.value[1]
+
+# 自定义静态方法，输入数字val1，返回枚举对象
+    @staticmethod
+    def from_val1(num):
+        for member in ProjectType:
+            if member.val1 == num:
+                return member
+        raise 0
+
+
 
 CONFIG_DICT = dict()
 IS_READED_MAC = False
 g_test_mode = 0
 g_project = 0
+g_projectMutation = False
 g_mac = ''
 g_MesTableName = ""
 TCP_CLIENTSOCKET = None
@@ -71,7 +103,8 @@ class StartBindingSn(QDialog):
     finish_signal = pyqtSignal()  # 完成信号
 
     def set_english_input_method(self):
-        """使用Windows API强制切换英文输入法"""
+        """使用Windows API强制切换
+        英文输入法"""
         try:
             # 获取当前前景窗口句柄
             hwnd = ctypes.windll.user32.GetForegroundWindow()
@@ -129,8 +162,8 @@ class StartBindingSn(QDialog):
         snlen = int(len(sn))
 
         if snlen > 0:
-            if (snlen == 20 and g_project == ProjectType.c7001.value or g_project == ProjectType.x7001.value) or\
-                (snlen >= 17 and snlen <= 20 and g_project == ProjectType.v7009.value):
+            if (snlen == 20 and g_project == ProjectType.c7001.val2 or g_project == ProjectType.x7001.val2) or\
+                (snlen >= 18 and snlen <= 22 and g_project == ProjectType.v7009.val2):
                 g_SnCode = str(sn)
                 self.ui.SnLineEdit_MAC.returnPressed.disconnect()
                 self.close()
@@ -151,16 +184,62 @@ class StartBindingSn(QDialog):
             self.ui.SnLineEdit_MAC.setFocus()
 
 
+def initialize_db_connection():
+    """初始化并返回数据库连接（带失败状态缓存）"""
+    global g_db_connection, g_connection_failed, g_MyWin
+
+    # 如果连接已存在且有效,则直接返回
+    if g_db_connection is not None and hasattr(g_db_connection, 'open') and g_db_connection.open:
+        return g_db_connection
+
+    try:
+        g_db_connection = pymysql.connect(
+            host='10.30.17.92',
+            user='hehao',
+            password='hehao666',
+            database='sengsi',
+            charset='utf8mb4',
+            cursorclass=pymysql.cursors.DictCursor,
+            connect_timeout=5
+        )
+
+        if g_db_connection:
+            QTimer.singleShot(0, lambda: g_MyWin.LogShow("MES连接成功!", "green"))
+            QTimer.singleShot(0, lambda: g_MyWin.LogShowSnMac("MES连接成功!", "green"))
+        else:
+            QTimer.singleShot(0, lambda: g_MyWin.LogShow("MES连接失败", "red"))
+            QTimer.singleShot(0, lambda: g_MyWin.LogShowSnMac("MES连接失败!", "red"))
+        return g_db_connection
+
+    except pymysql.MySQLError as e:
+        QTimer.singleShot(0, lambda: g_MyWin.LogShow("MES连接失败", "red"))
+        QTimer.singleShot(0, lambda: g_MyWin.LogShowSnMac("MES连接失败", "red"))
+        return None
+    except Exception as e:
+        QTimer.singleShot(0, lambda: g_MyWin.LogShow("MES连接失败", "red"))
+        QTimer.singleShot(0, lambda: g_MyWin.LogShowSnMac("MES连接失败", "red"))
+        return None
+
 
 class MyMainWindow(QMainWindow, Ui_MainWindow):
     refresh_port = pyqtSignal()
+
+    class DbWorker(QThread):
+        sig_log_show = pyqtSignal(str, str)
+
+        def run(self):
+            while True:
+                try:
+                    initialize_db_connection()
+                except Exception as e:
+                    print("重连失败")
+                QThread.msleep(1000)
+
 
     def __init__(self, parent=None):
         super(MyMainWindow, self).__init__(parent)
         self.setupUi(self)
         self.MyMain_Init()
-
-
 
 
     def setup_refresh_mac_sn_timer(self):
@@ -177,7 +256,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
 
     def LogShow(self, rxData, color="black"):
         global g_project
-        if g_project != ProjectType.sn_mac.value:
+        if g_project != ProjectType.sn_mac.val2:
             try:
                 # 获取当前默认文本格式（保存原先的格式）
                 cursor = self.LogTextEdit.textCursor()
@@ -216,7 +295,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
 
     def LogShowSnMac(self, rxData, color="black"):
         global  g_project
-        if g_project == ProjectType.sn_mac.value:
+        if g_project == ProjectType.sn_mac.val2:
             try:
                 # 获取当前默认文本格式（保存原先的格式）
                 cursor = self.sn_textEdit.textCursor()
@@ -254,78 +333,54 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
 
 
 
-    def initialize_db_connection(self):
-        """初始化并返回数据库连接（带失败状态缓存）"""
-        global g_db_connection, g_connection_failed, g_MyWin
-
-        # 如果之前连接失败过,直接返回None
-        if g_connection_failed:
-            return None
-
-        # 如果连接已存在且有效,则直接返回
-        if g_db_connection is not None and hasattr(g_db_connection, 'open') and g_db_connection.open:
-            return g_db_connection
-
-        try:
-            g_db_connection = pymysql.connect(
-                host='10.30.17.92',
-                user='hehao',
-                password='hehao666',
-                database='sengsi',
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor,
-                connect_timeout=5
-            )
-            g_connection_failed = False
-            if g_db_connection:
-                QTimer.singleShot(0, lambda: g_MyWin.LogShow("MES连接成功!", "green"))
-                QTimer.singleShot(0, lambda: g_MyWin.LogShowSnMac("MES连接成功!", "green"))
-            else:
-                QTimer.singleShot(0, lambda: g_MyWin.LogShow("MES连接失败", "red"))
-                QTimer.singleShot(0, lambda: g_MyWin.LogShowSnMac("MES连接失败!", "red"))
-            return g_db_connection
-
-        except pymysql.MySQLError as e:
-            g_connection_failed = True
-            QTimer.singleShot(0, lambda: g_MyWin.LogShow("MES连接失败", "red"))
-            QTimer.singleShot(0, lambda: g_MyWin.LogShowSnMac("MES连接失败", "red"))
-            return None
-        except Exception as e:
-            g_connection_failed = True
-            QTimer.singleShot(0, lambda: g_MyWin.LogShow("MES连接失败", "red"))
-            QTimer.singleShot(0, lambda: g_MyWin.LogShowSnMac("MES连接失败", "red"))
-            return None
 
 
 
-    def query_by_mac(mac_address):
-        """根据MAC地址查询数据"""
-        global g_db_connection, g_connection_failed,g_test_mode
-        # 如果之前连接失败过，直接返回None
-        if g_connection_failed:
-            print("数据库错误: 数据库连接不可用，请检查连接", file=sys.stderr)
-            return None
+
+    def closeEvent(self, event):
+        """窗口关闭，退出子线程，防止内存泄露"""
+        if hasattr(self, "db_worker") and self.db_worker.isRunning():
+            self.db_worker.terminate()
+            self.db_worker.wait()
+        super().closeEvent(event)
+
+
+    def binding_mac_sn_code_info(self,mac,sn,code ,info):
+        global g_db_connection,g_MesTableName
 
         # 获取现有连接（不尝试重新连接）
-        connection = g_db_connection if (
-                    g_db_connection is not None and hasattr(g_db_connection, 'open') and g_db_connection.open) else None
+        connection = g_db_connection if (g_db_connection is not None and hasattr(g_db_connection, 'open') and g_db_connection.open) else None
         if connection is None:
-            print("数据库错误: 数据库未初始化", file=sys.stderr)
-            return None
+            return False,"MES未连接,上传数据失败"
 
         try:
+
             with connection.cursor() as cursor:
-                sql = "SELECT * FROM `7001_xiaoxue_final` WHERE mac = %s"
+                # 开始事务
+                connection.begin()
 
+                # 先尝试删除
+                delete_sql = "DELETE FROM `" + g_MesTableName + "` WHERE mac = %s"
+                cursor.execute(delete_sql, (mac,))
 
-                cursor.execute(sql, (mac_address,))
-                return cursor.fetchall()
+                # 插入新记录
+                insert_sql = "INSERT INTO `" + g_MesTableName + "` (mac, sn, info, time) VALUES (%s, %s, %s, NOW())"
+                cursor.execute(insert_sql, (mac,g_SnCode,info))
+
+                # 提交事务
+                connection.commit()
+
+                return True,f"MAC:{mac}\nSN:{sn}\nCODE:{code} 绑定上传成功"
+
         except pymysql.MySQLError as e:
-            print(f"数据库错误: 数据库查询错误: {e}", file=sys.stderr)
-            return None
+            if connection:
+                connection.rollback()
+            return False,"上传MES数据失败"
         except Exception as e:
-            print(f"数据库错误: 发生意外错误: {e}", file=sys.stderr)
-            return None
+            if connection:
+                connection.rollback()
+            return False,"上传MES数据失败"
+
 
 
     def replace_mac_record(self,mac, info):
@@ -344,8 +399,8 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             return False
 
         try:
-            if (g_test_mode == 1 and g_project == ProjectType.x7001.value or g_project == ProjectType.c7001.value) or\
-                g_test_mode == 2 and g_project == ProjectType.v7009.value:
+            if (g_test_mode == 1 and g_project == ProjectType.x7001.val2 or g_project == ProjectType.c7001.val2) or\
+                g_test_mode == 2 and g_project == ProjectType.v7009.val2:
                 if not g_SnCode:
                     QTimer.singleShot(0, lambda: g_MyWin.LogShow("SN为空 上传MES数据失败", "red"))
                     return False
@@ -431,69 +486,108 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
     # 主窗口初始化
     def MyMain_Init(self):
 
-        global g_test_mode,g_project,g_MesTableName
+        global g_test_mode,g_project,g_projectMutation,g_MesTableName
 
-        self.stackedWidget.setCurrentIndex(g_project)
-
-        if g_project == ProjectType.x7001.value:
-            __NAME__ = "< 7001-讯飞实验箱-小学版 >    "
-            g_MesTableName = "7001_xiaoxue_final"
-
-        elif g_project == ProjectType.c7001.value:
-            __NAME__ = "< 7001-讯飞实验箱-初中版 >    "
-            g_MesTableName = "7001_chuzhong_final"
-
-
-        elif g_project == ProjectType.v260Teach.value:
-            __NAME__ = "< TS260-信息科技示教版 >    "
-            g_MesTableName = "v260Teach_blank"
-
-        elif g_project == ProjectType.v260Zkb.value:
-            __NAME__ = "< TS260-掌控板 >    "
-            g_MesTableName = "v260Zkb_blank"
-
-        elif g_project == ProjectType.v7005.value:
-            __NAME__ = "< 7005-掌控板-学境 >    "
+        t_isConnectMes = True
+        if g_project == ProjectType.v7011.val2:
             if g_test_mode == 0:
-                g_MesTableName = "7005_blank"
-            elif g_test_mode == 1:
-                g_MesTableName = "7005_final"
+                __NAME__ = "< 7011-讯飞 X-CARD 1拖动4 主控测试 >    "
+                g_MesTableName = "7011_x_card_final"
+                self.TabWidget.removeTab(4)
+                self.TabWidget.removeTab(3)
+                self.TabWidget.removeTab(2)
+                self.TabWidget.removeTab(0)
+            else:
+                __NAME__ = "< 7011-讯飞 X-CARD 主控成品测试 >    "
+                g_MesTableName = "7011_x_card_final"
+                self.TabWidget.removeTab(4)
+                self.TabWidget.removeTab(3)
+                self.TabWidget.removeTab(2)
+                self.TabWidget.removeTab(0)
 
-        elif g_project == ProjectType.m7005.value:
-            __NAME__ = "< 7005-模块-学境 >    "
 
+        elif g_project == ProjectType.d7011.val2:
+            __NAME__ = "< 7011-讯飞 X-CARD 底座测试 >    "
+            g_MesTableName = ""
+            self.TabWidget.removeTab(4)
+            self.TabWidget.removeTab(3)
+            self.TabWidget.removeTab(1)
+            self.TabWidget.removeTab(0)
+            self.resize(600, 720)
+            t_isConnectMes = False
+        else:
+            self.TabWidget.removeTab(2)
+            self.TabWidget.removeTab(1)
+            self.TabWidget.setCurrentIndex(0)
+            self.resize(940, 735)
 
-        elif g_project == ProjectType.v7007.value:
-            __NAME__ = "< 7007-掌控板-单板 >    "
-            g_MesTableName = "7007_final"
-
-        elif g_project == ProjectType.v7009.value:
-            __NAME__ = "< 7009-乐动掌控2.0 >    "
-            if g_test_mode == 0:
-                g_MesTableName = "7009_blank"
-            elif g_test_mode == 1 or g_test_mode == 2:
-                g_MesTableName = "7009_final"
-
-        elif g_project == ProjectType.sn_mac.value:
-            # 移除前两个页面
-            self.TabWidget.removeTab(1)  # 先移除第二个（索引1）
-            self.TabWidget.removeTab(0)  # 再移除第一个（索引0）
-
-            if g_test_mode == 0:
-                __NAME__ = "< 7008-SN绑定MAC地址 >    "
-                g_MesTableName = "7008_1956"
-            elif g_test_mode == 1:
-                __NAME__ = "< 7009-SN绑定MAC地址 >    "
-                g_MesTableName = "7009_final"
-            elif g_test_mode == 2:
-                __NAME__ = "< 7001-讯飞小学版-SN绑定MAC地址 >    "
+            if g_project == ProjectType.x7001.val2:
+                __NAME__ = "< 7001-讯飞实验箱-小学版 >    "
                 g_MesTableName = "7001_xiaoxue_final"
-            elif g_test_mode == 3:
-                __NAME__ = "< 7001-讯飞初中版-SN绑定MAC地址 >    "
+
+            elif g_project == ProjectType.c7001.val2:
+                __NAME__ = "< 7001-讯飞实验箱-初中版 >    "
                 g_MesTableName = "7001_chuzhong_final"
 
-        if g_project != ProjectType.sn_mac.value:
-            if g_project == ProjectType.v7009.value:
+            elif g_project == ProjectType.v260Teach.val2:
+                __NAME__ = "< TS260-信息科技示教版 >    "
+                g_MesTableName = "v260Teach_blank"
+
+            elif g_project == ProjectType.v260Zkb.val2:
+                __NAME__ = "< TS260-掌控板 >    "
+                g_MesTableName = "v260Zkb_blank"
+
+            elif g_project == ProjectType.v7005.val2:
+                __NAME__ = "< 7005-掌控板-学境 >    "
+                if g_test_mode == 0:
+                    g_MesTableName = "7005_blank"
+                elif g_test_mode == 1:
+                    g_MesTableName = "7005_final"
+
+            elif g_project == ProjectType.v7010.val2:
+                __NAME__ = "< 7010-掌控板-学境2.0 >    "
+                if g_test_mode == 0:
+                    g_MesTableName = "7005_blank"
+                elif g_test_mode == 1:
+                    g_MesTableName = "7005_final"
+                g_project = ProjectType.v7005.val2
+                g_projectMutation = True
+
+            elif g_project == ProjectType.m7005.val2:
+                __NAME__ = "< 7005-模块-学境 >    "
+
+            elif g_project == ProjectType.v7007.val2:
+                __NAME__ = "< 7007-掌控板-单板 >    "
+                g_MesTableName = "7007_final"
+
+            elif g_project == ProjectType.v7009.val2:
+                __NAME__ = "< 7009-乐动掌控2.0 >    "
+                if g_test_mode == 0:
+                    g_MesTableName = "7009_blank"
+                elif g_test_mode == 1 or g_test_mode == 2:
+                    g_MesTableName = "7009_final"
+
+            elif g_project == ProjectType.sn_mac.val2:
+                # 移除前两个页面
+                self.TabWidget.removeTab(2)  # 先移除第二个（索引1）
+                self.TabWidget.removeTab(1)  # 先移除第二个（索引1）
+                self.TabWidget.removeTab(0)  # 再移除第一个（索引0）
+
+                if g_test_mode == 0:
+                    __NAME__ = "< 7008-SN绑定MAC地址 >    "
+                    g_MesTableName = "7008_1956"
+                elif g_test_mode == 1:
+                    __NAME__ = "< 7009-SN绑定MAC地址 >    "
+                    g_MesTableName = "7009_final"
+                elif g_test_mode == 2:
+                    __NAME__ = "< 7001-讯飞小学版-SN绑定MAC地址 >    "
+                    g_MesTableName = "7001_xiaoxue_final"
+                elif g_test_mode == 3:
+                    __NAME__ = "< 7001-讯飞初中版-SN绑定MAC地址 >    "
+                    g_MesTableName = "7001_chuzhong_final"
+
+        if g_project != ProjectType.sn_mac.val2:
+            if g_project == ProjectType.v7009.val2:
                 if g_test_mode == 0:
                     __MODEL__ = "(半成品测试)"
                 elif g_test_mode == 1:
@@ -508,13 +602,41 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
         else:
             __MODEL__ = ""
 
-        if g_project != ProjectType.sn_mac.value:
+        self.stackedWidget.setCurrentIndex(g_project)
+
+        if g_project != ProjectType.sn_mac.val2:
             self.TabWidget.removeTab(2)
 
-        QTimer.singleShot(1000, self.initialize_db_connection)
+        if t_isConnectMes:
+            if g_project == ProjectType.v7011.val2 or g_project == ProjectType.d7011.val2:
+                self.db_worker = self.DbWorker()
+                self.db_worker.start()
+            else:
+                self.timer = QTimer(self)
+                self.timer.timeout.connect(initialize_db_connection)
+                self.timer.start(1000)
+
+
 
         # 注册 F6 快捷键
         keyboard.add_hotkey('shift', self.CopyMacInfo)
+
+
+        self.old_pageNum_1 = 0
+        self.old_testNum_1 = ""
+        self.old_text_1 = ""
+
+        self.old_pageNum_2 = 0
+        self.old_testNum_2 = ""
+        self.old_text_2 = ""
+
+        self.old_pageNum_3 = 0
+        self.old_testNum_3 = ""
+        self.old_text_3 = ""
+
+        self.old_pageNum_4 = 0
+        self.old_testNum_4 = ""
+        self.old_text_4 = ""
 
         self.is_func_serial_opened = False  # 是否打开串口
         self.is_funcTest_started = False    # 是否启动功能测试
@@ -528,7 +650,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
         self.manual_change_Button.setEnabled(False)
         self.retest_Button.setEnabled(False)
 
-        if g_project == ProjectType.m7005.value:
+        if g_project == ProjectType.m7005.val2:
             self.p7005_camera_module.setEnabled(False)
             self.p7005_rgb_module.setEnabled(False)
             self.p7005_soil_module.setEnabled(False)
@@ -550,19 +672,96 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
         validator = QRegExpValidator(regex, self.SnLineEdit_MAC)
         self.SnLineEdit_MAC.setValidator(validator)
 
-        # 刷新串口 槽函数                                   
-        self.on_refresh_func_Button_clicked()
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.on_refresh_func_Button_clicked)
-        self.timer.start(100)
+        if g_project == ProjectType.v7011.val2:
 
-        # 镭雕 槽函数                                                           
-        self.iPLineEdit.setText(self.get_local_ip())  # 镭雕机的IP地址
-        self.portLineEdit.setText("1000")  # 镭雕机的端口
-        self.setup_refresh_mac_sn_timer()
-        self.setup_refresh_carve_timer()
+            if g_test_mode == 0:
+                self.ui_stackedWidget_work_1.setCurrentIndex(2)
+                self.ui_stackedWidget_work_2.setCurrentIndex(2)
+                self.ui_stackedWidget_work_3.setCurrentIndex(2)
+                self.ui_stackedWidget_work_4.setCurrentIndex(2)
 
-        self.setWindowTitle(__NAME__ + __MODEL__ + "     < 版本：1.4 >")
+                # 刷新串口 槽函数
+                self.timer = QTimer(self)
+                self.timer.timeout.connect(self.pairing_com)
+                self.timer.start(100)
+
+                self.test_func_thread = OneToFourTest_Thread(1)  # 功能测试线程
+                self.test_func_thread.signal_get_work_com.connect(self.get_Lord_work_from_ui)
+                self.test_func_thread.signal_set_ui_page.connect(self.set_Lord_ui_page)
+                self.test_func_thread.start()
+
+                self.test_func_thread2 = OneToFourTest_Thread(2)  # 功能测试线程
+                self.test_func_thread2.signal_get_work_com.connect(self.get_Lord_work_from_ui)
+                self.test_func_thread2.signal_set_ui_page.connect(self.set_Lord_ui_page)
+                self.test_func_thread2.start()
+
+                self.test_func_thread3 = OneToFourTest_Thread(3)  # 功能测试线程
+                self.test_func_thread3.signal_get_work_com.connect(self.get_Lord_work_from_ui)
+                self.test_func_thread3.signal_set_ui_page.connect(self.set_Lord_ui_page)
+                self.test_func_thread3.start()
+
+                self.test_func_thread4 = OneToFourTest_Thread(4)  # 功能测试线程
+                self.test_func_thread4.signal_get_work_com.connect(self.get_Lord_work_from_ui)
+                self.test_func_thread4.signal_set_ui_page.connect(self.set_Lord_ui_page)
+                self.test_func_thread4.start()
+            else:
+
+                self.ui_stackedWidget_work_1.setCurrentIndex(2)
+                self.ui_stackedWidget_work_2.setCurrentIndex(2)
+                self.ui_stackedWidget_work_3.setCurrentIndex(2)
+                self.ui_stackedWidget_work_4.setCurrentIndex(2)
+
+                # 刷新串口 槽函数
+                self.timer = QTimer(self)
+                self.timer.timeout.connect(self.pairing_com)
+                self.timer.start(100)
+
+                self.test_func_thread = FinalTest_Thread(1)  # 功能测试线程
+                self.test_func_thread.signal_get_work_com.connect(self.get_Lord_work_from_ui)
+                self.test_func_thread.signal_set_ui_page.connect(self.set_Lord_ui_page)
+                self.test_func_thread.start()
+
+                self.test_func_thread2 = FinalTest_Thread(2)  # 功能测试线程
+                self.test_func_thread2.signal_get_work_com.connect(self.get_Lord_work_from_ui)
+                self.test_func_thread2.signal_set_ui_page.connect(self.set_Lord_ui_page)
+                self.test_func_thread2.start()
+
+                self.test_func_thread3 = FinalTest_Thread(3)  # 功能测试线程
+                self.test_func_thread3.signal_get_work_com.connect(self.get_Lord_work_from_ui)
+                self.test_func_thread3.signal_set_ui_page.connect(self.set_Lord_ui_page)
+                self.test_func_thread3.start()
+
+                self.test_func_thread4 = FinalTest_Thread(4)  # 功能测试线程
+                self.test_func_thread4.signal_get_work_com.connect(self.get_Lord_work_from_ui)
+                self.test_func_thread4.signal_set_ui_page.connect(self.set_Lord_ui_page)
+                self.test_func_thread4.start()
+
+        elif g_project == ProjectType.d7011.val2:
+
+            self.ui_stackedWidget_bot.setCurrentIndex(2)
+
+            self.timer = QTimer(self)
+            self.timer.timeout.connect(self.pairing_bot_com)
+            self.timer.start(100)
+            self.test_func_thread = BaseTest_Thread(g_test_mode)  # 功能测试线程
+            self.test_func_thread.signal_get_work_com.connect(self.get_Base_work_from_ui)
+            self.test_func_thread.signal_set_ui_page.connect(self.set_Base_ui_page)
+            self.test_func_thread.start()
+        else:
+            # 刷新串口 槽函数
+            self.on_refresh_func_Button_clicked()
+            self.timer = QTimer(self)
+            self.timer.timeout.connect(self.on_refresh_func_Button_clicked)
+            self.timer.start(100)
+
+            # 镭雕 槽函数
+            self.iPLineEdit.setText(self.get_local_ip())  # 镭雕机的IP地址
+            self.portLineEdit.setText("1000")  # 镭雕机的端口
+            self.setup_refresh_mac_sn_timer()
+            self.setup_refresh_carve_timer()
+
+        self.setWindowTitle(__NAME__ + __MODEL__ + "     < 版本：4.0 >")
+
 
         # 加载config
         external_file_path = os.path.join(os.getcwd(), 'config\hhconfig.json')
@@ -740,6 +939,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             for port in ports:
                 manufacturer = port.manufacturer()
                 print(manufacturer)
+                #QTimer.singleShot(0, lambda: g_MyWin.LogShow(manufacturer, "red"))
                 if manufacturer in ["Silicon Labs", "wch.cn","Microsoft","(Undefined Vendor)"]:
                     manufacturer_type = 0 if manufacturer == "Silicon Labs" else 1
                     port_name = port.portName()
@@ -749,6 +949,116 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             for port in com_list:
                 self.serial_func_comboBox.addItem(port)
             print(self.com_list)
+
+
+    def pairing_com(self):
+        # 仅在串口检测功能开启时运行
+        if not self.is_func_serial_opened:
+            return
+
+        # 收集当前可用的端口（并保留 manufacturer 类型）
+        self.com_list = {}
+        ports = QSerialPortInfo.availablePorts()
+        for port in ports:
+            manufacturer = port.manufacturer()
+            if manufacturer in ["Silicon Labs", "wch.cn", "Microsoft", "(Undefined Vendor)"]:
+                manufacturer_type = 0 if manufacturer == "Silicon Labs" else 1
+                self.com_list[port.portName()] = manufacturer_type
+
+        # 按端口名尾部的数字升序排序（如 COM3 < COM10）；无数字的排在后面
+        def _port_sort_key(name):
+            m = re.search(r'(\d+)$', name)
+            if m:
+                return (0, int(m.group(1)), name)  # 有数字的按数字排序，数字相同再按名字
+            return (1, name)  # 无数字的放到最后，按名字排序
+
+        available_ports = sorted(self.com_list.keys(), key=_port_sort_key)
+
+        # 四个 lineEdit 的引用（按你 UI 的顺序）
+        line_edits = [
+            self.ui_lineEdit_work_1,
+            self.ui_lineEdit_work_2,
+            self.ui_lineEdit_work_3,
+            self.ui_lineEdit_work_4,
+        ]
+
+        # 1) 清除那些已绑定但当前不可用的 port（设备拔掉时只清除对应的 lineEdit）
+        assigned_ports = set()
+        for le in line_edits:
+            text = le.text().strip()
+            if text:
+                if text not in available_ports:
+                    le.clear()
+                else:
+                    assigned_ports.add(text)
+
+        # 2) 将尚未分配的可用端口依次填入第一个空的 lineEdit（不重复分配）
+        for port in available_ports:
+            if port in assigned_ports:
+                continue
+            # 找到第一个空的 lineEdit 来填充
+            for le in line_edits:
+                if not le.text().strip():
+                    le.setText(port)
+                    assigned_ports.add(port)
+                    break
+            # 如果没有空 slot（4 个都被占用），则跳过该 port
+
+        # 调试输出（保留）
+        #print(self.com_list)
+
+    def pairing_bot_com(self):
+        # 仅在串口检测功能开启时运行
+        if not self.is_func_serial_opened:
+            return
+
+        # 收集当前可用的端口（并保留 manufacturer 类型）
+        self.com_list = {}
+        ports = QSerialPortInfo.availablePorts()
+        for port in ports:
+            manufacturer = port.manufacturer()
+            if manufacturer in ["Silicon Labs", "wch.cn", "Microsoft", "(Undefined Vendor)"]:
+                manufacturer_type = 0 if manufacturer == "Silicon Labs" else 1
+                self.com_list[port.portName()] = manufacturer_type
+
+        # 按端口名尾部的数字升序排序（如 COM3 < COM10）；无数字的排在后面
+        def _port_sort_key(name):
+            m = re.search(r'(\d+)$', name)
+            if m:
+                return (0, int(m.group(1)), name)  # 有数字的按数字排序，数字相同再按名字
+            return (1, name)  # 无数字的放到最后，按名字排序
+
+        available_ports = sorted(self.com_list.keys(), key=_port_sort_key)
+
+        # 四个 lineEdit 的引用（按你 UI 的顺序）
+        line_edits = [
+            self.ui_bot_lineEdit_work
+        ]
+
+        # 1) 清除那些已绑定但当前不可用的 port（设备拔掉时只清除对应的 lineEdit）
+        assigned_ports = set()
+        for le in line_edits:
+            text = le.text().strip()
+            if text:
+                if text not in available_ports:
+                    le.clear()
+                else:
+                    assigned_ports.add(text)
+
+        # 2) 将尚未分配的可用端口依次填入第一个空的 lineEdit（不重复分配）
+        for port in available_ports:
+            if port in assigned_ports:
+                continue
+            # 找到第一个空的 lineEdit 来填充
+            for le in line_edits:
+                if not le.text().strip():
+                    le.setText(port)
+                    assigned_ports.add(port)
+                    break
+            # 如果没有空 slot（4 个都被占用），则跳过该 port
+
+        # 调试输出（保留）
+        #print(self.com_list)
 
 
     def binding_sn_mac(self, mac, sn):
@@ -933,7 +1243,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
         sn = self.SnLineEdit_MAC.text()
         snlen = int(len(sn))
 
-        if snlen < 18 or snlen > 21:
+        if snlen < 18 or snlen > 22:
             self.SnLineEdit_MAC.setText('')
             self.SnLineEdit_MAC.setEnabled(True)
             self.SnLineEdit_MAC.setFocus()
@@ -1041,7 +1351,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             com_list = QSerialPortInfo.availablePorts()
             for com_info in com_list:
                 manufacturer = com_info.manufacturer()
-                if manufacturer in ["Microsoft","wch.cn"]:
+                if manufacturer in ["FTDI","Microsoft","wch.cn"]:
                     port_name = com_info.portName()
                     if port_name != current_port:
                         self.serial_carve_comboBox.clear()
@@ -1116,6 +1426,78 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
                                               """)
             self.close_get_sn_func()
 
+
+
+    # 一拖四 开始测试按键
+    @pyqtSlot()
+    def on_ui_btn_startTest_clicked(self):
+        global g_db_connection,g_project,g_test_mode
+        if not g_db_connection and g_test_mode == 0:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Critical)
+            msg.setWindowTitle("错误")
+            msg.setText("MES连接失败,请检查网络是否正常！")
+            btn_confirm = msg.addButton("返回", QMessageBox.RejectRole)
+            btn_continue = msg.addButton("离线测试", QMessageBox.AcceptRole)
+            msg.exec_()  # 在 PyQt6 中可以用 msg.exec()
+
+            if msg.clickedButton() == btn_confirm:
+                self.is_func_serial_opened = True
+
+
+        if not self.is_func_serial_opened:
+            self.ui_btn_startTest.setText("停止测试")
+            self.is_func_serial_opened = True
+            self.ui_lineEdit_work_1.setStyleSheet('color: rgb(85, 170, 127);font: 87 10pt "Arial Black";border: 1px solid rgb(85, 170, 127); padding: 1px;')
+            self.ui_lineEdit_work_2.setStyleSheet('color: rgb(85, 170, 127);font: 87 10pt "Arial Black";border: 1px solid rgb(85, 170, 127); padding: 1px;')
+            self.ui_lineEdit_work_3.setStyleSheet('color: rgb(85, 170, 127);font: 87 10pt "Arial Black";border: 1px solid rgb(85, 170, 127); padding: 1px;')
+            self.ui_lineEdit_work_4.setStyleSheet('color: rgb(85, 170, 127);font: 87 10pt "Arial Black";border: 1px solid rgb(85, 170, 127); padding: 1px;')
+        else:
+            self.ui_btn_startTest.setText("开始测试")
+            self.is_func_serial_opened = False
+            self.ui_lineEdit_work_1.setStyleSheet('color: rgb(85, 170, 127);font: 87 10pt "Arial Black";')
+            self.ui_lineEdit_work_2.setStyleSheet('color: rgb(85, 170, 127);font: 87 10pt "Arial Black";')
+            self.ui_lineEdit_work_3.setStyleSheet('color: rgb(85, 170, 127);font: 87 10pt "Arial Black";')
+            self.ui_lineEdit_work_4.setStyleSheet('color: rgb(85, 170, 127);font: 87 10pt "Arial Black";')
+            self.ui_lineEdit_work_1.clear()
+            self.ui_lineEdit_work_2.clear()
+            self.ui_lineEdit_work_3.clear()
+            self.ui_lineEdit_work_4.clear()
+
+        self.ui_stackedWidget_work_1.setCurrentIndex(2)
+        self.ui_stackedWidget_work_2.setCurrentIndex(2)
+        self.ui_stackedWidget_work_3.setCurrentIndex(2)
+        self.ui_stackedWidget_work_4.setCurrentIndex(2)
+
+
+    # 底座 开始测试按键
+    @pyqtSlot()
+    def on_ui_btn_bot_startTest_clicked(self):
+        global g_project,g_test_mode
+        if not self.is_func_serial_opened:
+            self.ui_btn_bot_startTest.setText("停止测试")
+            self.is_func_serial_opened = True
+            self.ui_bot_lineEdit_work.setStyleSheet('color: rgb(85, 170, 127);font: 87 10pt "Arial Black";border: 1px solid rgb(85, 170, 127); padding: 1px;')
+        else:
+            self.ui_btn_bot_startTest.setText("开始测试")
+            self.is_func_serial_opened = False
+            self.ui_bot_lineEdit_work.setStyleSheet('color: rgb(85, 170, 127);font: 87 10pt "Arial Black";')
+            self.ui_bot_lineEdit_work.clear()
+
+        self.ui_stackedWidget_bot.setCurrentIndex(2)
+
+        # 底座 开始测试按键
+
+    @pyqtSlot()
+    def on_ui_btn_bot_retest_clicked(self):
+        global g_project, g_test_mode
+        if self.is_func_serial_opened:
+            self.test_func_thread.signal_isRetest.emit(True)
+
+
+
+
+
     # 功能测试开始按键
     @pyqtSlot()
     def on_com_func_Button_clicked(self):
@@ -1134,7 +1516,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             # 禁止配置串口
             self.serial_func_comboBox.setEnabled(False)
 
-            if g_project == ProjectType.m7005.value:
+            if g_project == ProjectType.m7005.val2:
                 self.p7005_camera_module.setEnabled(True)
                 self.p7005_rgb_module.setEnabled(True)
                 self.p7005_soil_module.setEnabled(True)
@@ -1151,7 +1533,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
                 self.p7005_rfid_module.setEnabled(True)
                 self.p7005_hrrest_module.setEnabled(True)
 
-            if not g_project == ProjectType.m7005.value:
+            if not g_project == ProjectType.m7005.val2:
                 self.change_test_prj_Button.setEnabled(True)
                 self.manual_change_Button.setEnabled(True)
 
@@ -1160,12 +1542,12 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
 
 
             if self.test_func_thread.serial.isOpen():
-                if g_project == ProjectType.c7001.value or g_project == ProjectType.x7001.value or g_project == ProjectType.v7009.value and g_test_mode == 2:
+                if g_project == ProjectType.c7001.val2 or g_project == ProjectType.x7001.val2 or g_project == ProjectType.v7009.val2 and g_test_mode == 2:
                     self.bindingSnWin = StartBindingSn(parent=self)
                     self.bindingSnWin.show()
                     self.bindingSnWin.activateWindow()  # 激活窗口到最前
         else:
-            if hasattr(self, 'bindingSnWin') and g_project == ProjectType.c7001.value or g_project == ProjectType.x7001.value or g_project == ProjectType.v7009.value and g_test_mode == 2:
+            if hasattr(self, 'bindingSnWin') and g_project == ProjectType.c7001.val2 or g_project == ProjectType.x7001.val2 or g_project == ProjectType.v7009.val2 and g_test_mode == 2:
                 self.bindingSnWin.close()               # 关闭窗口
                 self.bindingSnWin.deleteLater()         # 安全销毁对象
                 self.bindingSnWin = None                # 清除引用
@@ -1181,7 +1563,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             self.retest_Button.setEnabled(False)
             self.is_funcTest_started = False
 
-            if g_project == ProjectType.m7005.value:
+            if g_project == ProjectType.m7005.val2:
                 self.p7005_camera_module.setEnabled(False)
                 self.p7005_rgb_module.setEnabled(False)
                 self.p7005_soil_module.setEnabled(False)
@@ -1205,6 +1587,166 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             self.test_func_thread.wait()
             self.clear_all_TestItem()
 
+    def get_Lord_work_from_ui(self, num):
+        isStart = self.is_func_serial_opened
+        if num == 1:
+            text = self.ui_lineEdit_work_1.text()
+            self.test_func_thread.signal_com_refresh.emit(text, isStart)
+        elif num == 2:
+            text = self.ui_lineEdit_work_2.text()
+            self.test_func_thread2.signal_com_refresh.emit(text, isStart)
+        elif num == 3:
+            text = self.ui_lineEdit_work_3.text()
+            self.test_func_thread3.signal_com_refresh.emit(text, isStart)
+        elif num == 4:
+            text = self.ui_lineEdit_work_4.text()
+            self.test_func_thread4.signal_com_refresh.emit(text, isStart)
+
+
+    def get_Base_work_from_ui(self, num):
+        text = self.ui_bot_lineEdit_work.text()
+        isStart = self.is_func_serial_opened
+        self.test_func_thread.signal_com_refresh.emit(text, isStart)
+
+
+    @pyqtSlot()
+    def on_ui_btnPass_work_1_clicked(self):
+        self.test_func_thread.signal_isPassOrNg.emit(True)
+
+    @pyqtSlot()
+    def on_ui_btnNg_work_1_clicked(self):
+        self.test_func_thread.signal_isPassOrNg.emit(False)
+
+
+    @pyqtSlot()
+    def on_ui_btnPass_work_2_clicked(self):
+        self.test_func_thread2.signal_isPassOrNg.emit(True)
+
+    @pyqtSlot()
+    def on_ui_btnNg_work_2_clicked(self):
+        self.test_func_thread2.signal_isPassOrNg.emit(False)
+
+
+    @pyqtSlot()
+    def on_ui_btnPass_work_3_clicked(self):
+        self.test_func_thread3.signal_isPassOrNg.emit(True)
+
+    @pyqtSlot()
+    def on_ui_btnNg_work_3_clicked(self):
+        self.test_func_thread3.signal_isPassOrNg.emit(False)
+
+
+    @pyqtSlot()
+    def on_ui_btnPass_work_4_clicked(self):
+        self.test_func_thread4.signal_isPassOrNg.emit(True)
+
+    @pyqtSlot()
+    def on_ui_btnNg_work_4_clicked(self):
+        self.test_func_thread4.signal_isPassOrNg.emit(False)
+
+    @pyqtSlot()
+    def on_ui_btn_bot_Pass_work_clicked(self):
+        self.test_func_thread.signal_isPassOrNg.emit(True)
+
+    @pyqtSlot()
+    def on_ui_btn_bot_Ng_work_clicked(self):
+        self.test_func_thread.signal_isPassOrNg.emit(False)
+
+
+
+    def set_Lord_ui_page(self, work,isAutoTest, pageNum, testNum, text):
+        if work == 1:
+            if self.old_pageNum_1 == pageNum and self.old_testNum_1 == testNum and self.old_text_1 == text:
+                return
+            else:
+                self.old_pageNum_1 = pageNum
+                self.old_testNum_1 = testNum
+                self.old_text_1 = text
+                self.ui_stackedWidget_work_1.setCurrentIndex(pageNum)
+                if pageNum == 0:
+                    self.ui_showPassInfo_work_1.setText(testNum)
+                if pageNum == 1:
+                    self.ui_showNgInfo_work_1.setText(testNum)
+                if pageNum == 3:
+                    self.ui_showTestNum_work_1.setText(testNum)
+                    self.ui_showTestInfo_work_1.setText(text)
+                    self.ui_widgetPN_1.setVisible(isAutoTest)
+
+        if work == 2:
+            if self.old_pageNum_2 == pageNum and self.old_testNum_2 == testNum and self.old_text_2 == text:
+                return
+            else:
+                self.old_pageNum_2 = pageNum
+                self.old_testNum_2 = testNum
+                self.old_text_2 = text
+                self.ui_stackedWidget_work_2.setCurrentIndex(pageNum)
+                if pageNum == 0:
+                    self.ui_showPassInfo_work_2.setText(testNum)
+                if pageNum == 1:
+                    self.ui_showNgInfo_work_2.setText(testNum)
+                if pageNum == 3:
+                    self.ui_showTestNum_work_2.setText(testNum)
+                    self.ui_showTestInfo_work_2.setText(text)
+                    self.ui_widgetPN_2.setVisible(isAutoTest)
+
+        if work == 3:
+            if self.old_pageNum_3 == pageNum and self.old_testNum_3 == testNum and self.old_text_3 == text:
+                return
+            else:
+                self.old_pageNum_3 = pageNum
+                self.old_testNum_3 = testNum
+                self.old_text_3 = text
+                self.ui_stackedWidget_work_3.setCurrentIndex(pageNum)
+                if pageNum == 0:
+                    self.ui_showPassInfo_work_3.setText(testNum)
+                if pageNum == 1:
+                    self.ui_showNgInfo_work_3.setText(testNum)
+                if pageNum == 3:
+                    self.ui_showTestNum_work_3.setText(testNum)
+                    self.ui_showTestInfo_work_3.setText(text)
+                    self.ui_widgetPN_3.setVisible(isAutoTest)
+
+        if work == 4:
+            if self.old_pageNum_4 == pageNum and self.old_testNum_4 == testNum and self.old_text_4 == text:
+                return
+            else:
+                self.old_pageNum_4 = pageNum
+                self.old_testNum_4 = testNum
+                self.old_text_4 = text
+                self.ui_stackedWidget_work_4.setCurrentIndex(pageNum)
+                if pageNum == 0:
+                    self.ui_showPassInfo_work_4.setText(testNum)
+                if pageNum == 1:
+                    self.ui_showNgInfo_work_4.setText(testNum)
+                if pageNum == 3:
+                    self.ui_showTestNum_work_4.setText(testNum)
+                    self.ui_showTestInfo_work_4.setText(text)
+                    self.ui_widgetPN_4.setVisible(isAutoTest)
+
+    def set_Base_ui_page(self, isAutoTest, pageNum, testNum, text):
+
+        if self.old_pageNum_1 == pageNum and self.old_testNum_1 == testNum and self.old_text_1 == text:
+            return
+        else:
+            self.old_pageNum_1 = pageNum
+            self.old_testNum_1 = testNum
+            self.old_text_1 = text
+
+            self.ui_stackedWidget_bot.setCurrentIndex(pageNum)
+            if pageNum == 0:
+                self.ui_showPassInfo_work_bot.setText(testNum)
+            if pageNum == 1:
+                self.ui_showNgInfo_work_bot.setText(testNum)
+            if pageNum == 3:
+                self.ui_bot_showTestNum_work.setText(testNum)
+                self.ui_bot_showTestInfo_work.setText(text)
+                self.ui_widgetPN_bot.setVisible(isAutoTest)
+
+
+
+
+    def fun_is_func_serial_opened(self):
+        self.test_func_thread.recv_is_func_serial_opened.emit(self.is_func_serial_opened)
 
 
 
@@ -1220,7 +1762,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
         self.test_func_thread.start()
 
 
-        if g_project == ProjectType.x7001.value:
+        if g_project == ProjectType.x7001.val2:
             self.test_func_thread.signal_ir1.connect(
                 lambda: self.change_background(self.x7001_ir1_value_label, "rgb(0, 170, 127)"))
             self.test_func_thread.signal_humiture.connect(
@@ -1242,7 +1784,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             self.test_func_thread.signal_sound.connect(
                 lambda: self.change_background(self.x7001_sound_value_label, "rgb(0, 170, 127)"))
 
-        elif g_project == ProjectType.c7001.value:
+        elif g_project == ProjectType.c7001.val2:
             self.test_func_thread.signal_ir1.connect(
                 lambda: self.change_background(self.c7001_ir1_value_label, "rgb(0, 170, 127)"))
             self.test_func_thread.signal_humiture.connect(
@@ -1262,7 +1804,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             self.test_func_thread.signal_acc_all.connect(
                 lambda: self.change_background(self.c7001_acc_value_label, "rgb(0, 170, 127)"))
 
-        elif g_project == ProjectType.v260Teach.value:
+        elif g_project == ProjectType.v260Teach.val2:
             self.test_func_thread.signal_ir1.connect(
                 lambda: self.change_background(self.ts260_slider_value_label, "rgb(0, 170, 127)"))
             self.test_func_thread.signal_humiture.connect(
@@ -1276,7 +1818,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             self.test_func_thread.signal_Light.connect(
                 lambda: self.change_background(self.ts260_light_value_label, "rgb(0, 170, 127)"))
 
-        elif g_project == ProjectType.v7007.value:
+        elif g_project == ProjectType.v7007.val2:
             self.test_func_thread.signal_touchpad_p.connect(
                 lambda: self.change_background(self.v7007_tp_widget, "rgb(0, 170, 127)"))
             self.test_func_thread.signal_touchpad_y.connect(
@@ -1302,7 +1844,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             self.test_func_thread.signal_acc_all.connect(
                 lambda: self.change_background(self.v7007_acc_value_label, "rgb(0, 170, 127)"))
 
-        elif g_project == ProjectType.v260Zkb.value:
+        elif g_project == ProjectType.v260Zkb.val2:
             self.test_func_thread.signal_touchpad_p.connect(
                 lambda: self.change_background(self.v260Zkb_tp_widget, "rgb(0, 170, 127)"))
             self.test_func_thread.signal_touchpad_y.connect(
@@ -1336,7 +1878,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
                 lambda: self.change_background(self.v260Zkb_p2_value_label, "rgb(0, 170, 127)"))
 
 
-        elif g_project == ProjectType.v7005.value:
+        elif g_project == ProjectType.v7005.val2:
             self.test_func_thread.signal_touchpad_p.connect(
                 lambda: self.change_background(self.v7005_tp_widget, "rgb(0, 170, 127)"))
             self.test_func_thread.signal_touchpad_y.connect(
@@ -1364,7 +1906,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             self.test_func_thread.signal_sda_scl.connect(
                 lambda: self.change_background(self.v7005_sda_scl_value_label, "rgb(0, 170, 127)"))
 
-        elif g_project == ProjectType.v7009.value:
+        elif g_project == ProjectType.v7009.val2:
             self.test_func_thread.signal_touchpad_p.connect(
                 lambda: self.change_background(self.v7009_tp_widget, "rgb(0, 170, 127)"))
             self.test_func_thread.signal_touchpad_y.connect(
@@ -1582,7 +2124,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
 
     @pyqtSlot()
     def on_change_test_prj_Button_clicked(self):
-        global g_project
+        global g_project,g_projectMutation
 
         try:
             self.test_func_thread.serial.readyRead.disconnect()
@@ -1597,19 +2139,21 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
 
 
         try:
-            if g_project == ProjectType.x7001.value:
+            if g_project == ProjectType.x7001.val2:
                 external_file_path = os.path.join(os.getcwd(), 'config\hhTest_7001_小学版.py')
-            elif g_project == ProjectType.c7001.value:
+            elif g_project == ProjectType.c7001.val2:
                 external_file_path = os.path.join(os.getcwd(), 'config\hhTest_7001_初中版.py')
-            elif g_project == ProjectType.v7005.value:
+            elif g_project == ProjectType.v7005.val2 and not g_projectMutation:
                 external_file_path = os.path.join(os.getcwd(), 'config\hhTest_7005.py')
-            elif g_project == ProjectType.v7007.value:
+            elif g_project == ProjectType.v7005.val2 and g_projectMutation:
+                external_file_path = os.path.join(os.getcwd(), 'config\hhTest_7010.py')
+            elif g_project == ProjectType.v7007.val2:
                 external_file_path = os.path.join(os.getcwd(), 'config\hhTest_7007.py')
-            elif g_project == ProjectType.v7009.value:
+            elif g_project == ProjectType.v7009.val2:
                 external_file_path = os.path.join(os.getcwd(), 'config\hhTest_7009.py')
-            elif g_project == ProjectType.v260Teach.value:
+            elif g_project == ProjectType.v260Teach.val2:
                 external_file_path = os.path.join(os.getcwd(), 'config\hhTest_ts260Teach.py')
-            elif g_project == ProjectType.v260Zkb.value:
+            elif g_project == ProjectType.v260Zkb.val2:
                 external_file_path = os.path.join(os.getcwd(), 'config\hhTest_ZKB.py')
 
             # 1. 读取文件内容并预处理
@@ -2249,7 +2793,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
 
         global g_project
 
-        if g_project == ProjectType.x7001.value:
+        if g_project == ProjectType.x7001.val2:
             # -------------- 光线 --------------
             self.x7001_light_value_label.setText(list_[0])
 
@@ -2281,7 +2825,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             # -------------- SDA/SCL --------------
             self.x7001_sda_scl_value_label.setText(list_[10])
 
-        elif g_project == ProjectType.c7001.value:
+        elif g_project == ProjectType.c7001.val2:
             # -------------- 光线 --------------
             self.c7001_light_value_label.setText(list_[0])
 
@@ -2311,7 +2855,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             # -------------- SDA/SCL --------------
             self.c7001_sda_scl_value_label.setText(list_[13])
 
-        elif g_project == ProjectType.v260Teach.value:
+        elif g_project == ProjectType.v260Teach.val2:
             # -------------- 光线 --------------
             self.ts260_light_value_label.setText(list_[0])
 
@@ -2331,7 +2875,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             self.ts260_iic_value_label.setText(list_[6])
 
 
-        elif g_project == ProjectType.v7005.value:
+        elif g_project == ProjectType.v7005.val2:
 
             # -------------- 触摸 --------------
             self.v7005_tp_value_label.setText(list_[0])
@@ -2363,7 +2907,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             self.v7005_sda_scl_value_label.setText(list_[18])
 
 
-        elif g_project == ProjectType.v7007.value:
+        elif g_project == ProjectType.v7007.val2:
             # -------------- 触摸 --------------
             self.v7007_tp_value_label.setText(list_[0])
             self.v7007_ty_value_label.setText(list_[1])
@@ -2390,7 +2934,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             # -------------- Wifi --------------
             self.v7007_wifi_value_label.setText(list_[17])
 
-        elif g_project == ProjectType.v260Zkb.value:
+        elif g_project == ProjectType.v260Zkb.val2:
             # -------------- 触摸 --------------
             self.v260Zkb_tp_value_label.setText(list_[0])
             self.v260Zkb_ty_value_label.setText(list_[1])
@@ -2427,7 +2971,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             self.v260Zkb_p2_value_label.setText(list_[20])
 
 
-        elif g_project == ProjectType.v7009.value:
+        elif g_project == ProjectType.v7009.val2:
 
             # -------------- 触摸 --------------
             self.v7009_tp_value_label.setText(list_[0])
@@ -2612,6 +3156,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
 
         self.change_background(self.result_func_label, "rgb(203, 203, 203)")
         self.result_func_label.setText("")
+
 
 
 ################################################################
@@ -2806,6 +3351,7 @@ class FuncTest_Thread(QThread):
         return False
 
 
+
     def show_serial_error_message(self, retry_count, error_msg):
         """显示串口错误消息"""
         msg = f"无法连接串口: {self.port}\n错误: {error_msg}\n已重试 {retry_count} 次"
@@ -2828,6 +3374,7 @@ class FuncTest_Thread(QThread):
             # 提取数据
             self.collect_mac_data(recv_str)
 
+    # OK的
     def on_serial_read(self):
         if not self.IS_ALL_FUNCT_PASS:
             recv_buf = self.serial.readAll()
@@ -2858,25 +3405,30 @@ class FuncTest_Thread(QThread):
 
         try:
             # 拼接目标文件路径
-            if g_project == ProjectType.x7001.value:
+            if g_project == ProjectType.x7001.val2:
                 external_file_path = os.path.join(os.getcwd(), 'config\hhDemo_7001_小学版.py')
 
-            if g_project == ProjectType.c7001.value:
+            if g_project == ProjectType.c7001.val2:
                 external_file_path = os.path.join(os.getcwd(), 'config\hhDemo_7001_初中版.py')
 
-
-            if g_project == ProjectType.v7005.value:
+            if g_project == ProjectType.v7005.val2 and not g_projectMutation:
                 external_file_path = os.path.join(os.getcwd(), 'config\hhDemo_7005.py')
 
-            if g_project == ProjectType.v7007.value or g_project == ProjectType.v260Teach.value:
+            if g_project == ProjectType.v7005.val2 and g_projectMutation:
+                external_file_path = os.path.join(os.getcwd(), 'config\hhDemo_7010.py')
+
+            if g_project == ProjectType.v7007.val2:
                 external_file_path = os.path.join(os.getcwd(), 'config\hhDemoNULL.py')
 
-            if g_project == ProjectType.v7009.value:
+            if g_project == ProjectType.v260Teach.val2:
+                external_file_path = os.path.join(os.getcwd(), 'config\hhDemo_ts260Teach.py')
+
+
+            if g_project == ProjectType.v7009.val2:
                 external_file_path = os.path.join(os.getcwd(), 'config\hhDemo_7009.py')
 
-            if g_project == ProjectType.v260Zkb.value:
+            if g_project == ProjectType.v260Zkb.val2:
                 external_file_path = os.path.join(os.getcwd(), 'config\hhDemo_ZKB.py')
-
 
 
             # 1. 读取文件内容并预处理
@@ -2934,7 +3486,7 @@ class FuncTest_Thread(QThread):
         list_ = []
 
         # 7001小学版
-        if g_project == ProjectType.x7001.value:
+        if g_project == ProjectType.x7001.val2:
             # -------------- 光线 --------------
             pattern = re.compile(r'(?<=light:)[-+]?\d+\.?\d*')
             finded_list = pattern.findall(recv_str)
@@ -3036,7 +3588,7 @@ class FuncTest_Thread(QThread):
 
 
         # 7001初中版
-        elif g_project == ProjectType.c7001.value:
+        elif g_project == ProjectType.c7001.val2:
             # -------------- 光线 --------------
             pattern = re.compile(r'(?<=light:)[-+]?\d+\.?\d*')
             finded_list = pattern.findall(recv_str)
@@ -3143,7 +3695,7 @@ class FuncTest_Thread(QThread):
             ]
 
         # v260Teach
-        elif g_project == ProjectType.v260Teach.value:
+        elif g_project == ProjectType.v260Teach.val2:
             # -------------- 光线 --------------
             pattern = re.compile(r'(?<=light:)[-+]?\d+\.?\d*')
             finded_list = pattern.findall(recv_str)
@@ -3205,7 +3757,7 @@ class FuncTest_Thread(QThread):
 
 
         # 7005 学境-掌控板
-        elif g_project == ProjectType.v7005.value:
+        elif g_project == ProjectType.v7005.val2:
 
             pattern = re.compile(r'(?<=Mac:)[^\r\n]+')
             finded_list = pattern.findall(recv_str)
@@ -3329,7 +3881,7 @@ class FuncTest_Thread(QThread):
 
 
         # 7007 掌控板 单板
-        elif g_project == ProjectType.v7007.value:
+        elif g_project == ProjectType.v7007.val2:
 
             pattern = re.compile(r'(?<=Mac:)[^\r\n]+')
             finded_list = pattern.findall(recv_str)
@@ -3444,7 +3996,7 @@ class FuncTest_Thread(QThread):
             ]
 
         # 旧版 掌控板 单板
-        elif g_project == ProjectType.v260Zkb.value:
+        elif g_project == ProjectType.v260Zkb.val2:
 
             pattern = re.compile(r'(?<=Mac:)[^\r\n]+')
             finded_list = pattern.findall(recv_str)
@@ -3583,7 +4135,7 @@ class FuncTest_Thread(QThread):
 
 
         # 7009 乐动掌控板2.0
-        elif g_project == ProjectType.v7009.value:
+        elif g_project == ProjectType.v7009.val2:
 
             pattern = re.compile(r'(?<=Mac:)[^\r\n]+')
             finded_list = pattern.findall(recv_str)
@@ -3717,7 +4269,7 @@ class FuncTest_Thread(QThread):
 
         print("功能测试开始!")
         while True:
-            if g_project == ProjectType.x7001.value:
+            if g_project == ProjectType.x7001.val2:
                 # Wifi
                 if int(self.Wifi) > -70 and int(self.Wifi) < 0 and not self.wifi_emit:
                     print("wifi pass")
@@ -3829,7 +4381,7 @@ class FuncTest_Thread(QThread):
                         self.All_funct_test_pass.emit(result)
                         self.IS_ALL_FUNCT_PASS = True
 
-            elif g_project == ProjectType.c7001.value:
+            elif g_project == ProjectType.c7001.val2:
                 # Wifi
                 if int(self.Wifi) > -70 and int(self.Wifi) < 0 and not self.wifi_emit:
                     print("wifi pass")
@@ -3921,7 +4473,7 @@ class FuncTest_Thread(QThread):
                         self.All_funct_test_pass.emit(result)
                         self.IS_ALL_FUNCT_PASS = True
 
-            elif g_project == ProjectType.v260Teach.value:
+            elif g_project == ProjectType.v260Teach.val2:
                 # Wifi
                 if int(self.Wifi) > -80 and int(self.Wifi) < 0 and not self.wifi_emit:
                     print("wifi pass")
@@ -3982,7 +4534,7 @@ class FuncTest_Thread(QThread):
 
 
 
-            elif g_project == ProjectType.v7005.value:
+            elif g_project == ProjectType.v7005.val2:
 
                 # 触摸P
                 if int(self.tp_value) > 0 and not self.tp_emit:
@@ -4096,7 +4648,7 @@ class FuncTest_Thread(QThread):
                             self.All_funct_test_pass.emit(result)
                             self.IS_ALL_FUNCT_PASS = True
 
-            elif g_project == ProjectType.v7007.value:
+            elif g_project == ProjectType.v7007.val2:
 
                 # 触摸P
                 if int(self.tp_value) > 0 and not self.tp_emit:
@@ -4207,7 +4759,7 @@ class FuncTest_Thread(QThread):
                         self.All_funct_test_pass.emit(result)
                         self.IS_ALL_FUNCT_PASS = True
 
-            elif g_project == ProjectType.v260Zkb.value:
+            elif g_project == ProjectType.v260Zkb.val2:
 
                 # 触摸P
                 if int(self.tp_value) > 0 and not self.tp_emit:
@@ -4343,7 +4895,7 @@ class FuncTest_Thread(QThread):
                         self.IS_ALL_FUNCT_PASS = True
 
 
-            elif g_project == ProjectType.v7009.value:
+            elif g_project == ProjectType.v7009.val2:
 
                 # 触摸P
                 if int(self.tp_value) > 0 and not self.tp_emit:
@@ -4461,6 +5013,4436 @@ class FuncTest_Thread(QThread):
 
 
 
+class OneToFourTest_Thread(QThread):
+    signal_get_work_com = pyqtSignal(int)
+    signal_set_ui_page = pyqtSignal(int,bool,int, str, str)
+    signal_com_refresh = pyqtSignal(str, bool)
+    signal_isPassOrNg =  pyqtSignal(bool)
+
+
+    class TestType(Enum):
+        null = 0
+        rgb = 1
+        lcd = 2
+        tf = 3
+        mp3 = 4
+        btn = 5
+        i2c = 6
+        adc = 7
+        msg = 8
+        wifi = 9
+        gpio = 10
+        mes = 11
+        writeSn = 12
+        finish = 13
+
+
+    def __init__(self,work):
+        super(OneToFourTest_Thread, self).__init__()
+        self._recv_accum = ""           # 累积接收文本，处理分片
+        self.port = ""
+        self.isStart = False
+        self.isOpenPort = False
+        self.serial = None
+        self._check_timer = None
+        self._write_timer = None
+        self.work = work
+        self.initVars()
+
+        self.cmd_rgb = "tool call test_rgb r=50 g=50 b=50"
+        self.cmd_lcd_rgb = "tool call test_lcd r=255 g=255 b=255\ntool call test_lcd r=255 g=0 b=0\ntool call test_lcd r=0 g=255 b=0\ntool call test_lcd r=0 g=0 b=255"
+        self.cmd_lcd_rgb_white = "tool call test_lcd r=255 g=255 b=255"
+        self.cmd_btn = "tool call test_buttons timeout_ms=1000"
+        self.cmd_tf = "tool call test_tf"
+        self.cmd_play = "tool call test_audio action=play"
+        self.cmd_adc = "tool call test_sound_adc duration_ms=1000"
+        self.cmd_msg = "tool call test_sensors"
+        self.cmd_i2c = "i2c_scan\n"
+
+        self.ssid, self.password = self.getWifiConfig()
+        if self.ssid and self.password:
+            self.cmd_wifi = 'tool call test_wifi --json {{"ssid":"{}","password":"{}"}}'.format(self.ssid, self.password)
+        else:
+            self.cmd_wifi = ""
+
+        self.cmd_mp3 = "tool call play_audio url=file:///sdcard/voice/music_1.mp3"
+        self.cmd_gpio = "tool call test_ext_pin pin=P0 mode=in\ntool call test_ext_pin pin=P1 mode=in\ntool call test_ext_pin pin=P2 mode=in\ntool call test_ext_pin pin=P3 mode=in\n"
+        self.cmd_base_rgb = "tool call control_ext_rgb module=base index=-1 r=50 g=50 b=50"
+
+        angle1, angle2 = self.getServoAngle(self.work)
+        self.cmd_servo_turn = "tool call control_ext_servo servo_num=1 angle={}\ntool call control_ext_servo servo_num=2 angle={}".format(angle1, angle2)
+        self.cmd_servo_stop = "tool call control_ext_servo servo_num=1 angle=0.0\ntool call control_ext_servo servo_num=2 angle=0.0"
+        self.cmd_base_power = "tool call control_base_power enable=true"
+        self.cmd_read_mac = "tool call read_mac"
+
+
+        self.signal_com_refresh.connect(self.set_work_code)
+        self.signal_isPassOrNg.connect(self.Is_Pass_Or_Ng)
+
+    def getServoAngle(self,station_num: int):
+        # 拼接文件路径：当前目录/config/ServoAngle.ini
+        ini_path = os.path.join(os.getcwd(), "config", "ServoAngle.ini")
+        cfg = configparser.ConfigParser()
+
+        # 判断文件是否存在
+        if not os.path.exists(ini_path):
+            QMessageBox.critical(None, "配置错误", f"配置文件不存在：\n{ini_path}")
+            return None, None
+
+        # 读取ini
+        try:
+            cfg.read(ini_path, encoding="utf-8")
+        except Exception as e:
+            QMessageBox.critical(None, "读取失败", f"读取ServoAngle.ini出错：{str(e)}")
+            return None, None
+
+        sec_name = str(station_num)
+        # 判断工位section是否存在
+        if sec_name not in cfg.sections():
+            QMessageBox.warning(None, "工位不存在", f"无工位{station_num}配置")
+            return None, None
+
+        try:
+            top_val = float(cfg.get(sec_name, "top"))
+            down_val = float(cfg.get(sec_name, "down"))
+            return top_val, down_val
+        except Exception as e:
+            QMessageBox.critical(None, "参数解析错误", f"工位{station_num}参数读取失败：{str(e)}")
+            return None, None
+
+    def getWifiConfig(self):
+        """
+        读取INI中 [wifi] 节点的ssid、password
+        :return: (ssid, password) 读取失败返回 (None, None)
+        """
+        ini_path = os.path.join(os.getcwd(), "config", "ServoAngle.ini")
+        cfg = configparser.ConfigParser()
+
+        # 文件存在校验
+        if not os.path.exists(ini_path):
+            QMessageBox.critical(None, "配置错误", f"wifi配置文件不存在：\n{ini_path}")
+            return None, None
+
+        # 加载ini
+        try:
+            cfg.read(ini_path, encoding="utf-8")
+        except Exception as e:
+            QMessageBox.critical(None, "读取失败", f"读取配置文件异常：{str(e)}")
+            return None, None
+
+        # 校验[wifi]区块
+        wifi_section = "wifi"
+        if wifi_section not in cfg.sections():
+            QMessageBox.warning(None, "配置缺失", "INI文件内无 [wifi] 配置区块")
+            return None, None
+
+        try:
+            ssid = cfg.get(wifi_section, "ssid").strip()
+            password = cfg.get(wifi_section, "password").strip()
+            return ssid, password
+        except Exception as e:
+            QMessageBox.critical(None, "参数缺失", f"wifi ssid/password读取失败：{str(e)}")
+            return None, None
+
+    def initVars(self):
+        self._recv_accum = ""
+        self.msn = 0
+        self.mac = ""
+        self.sn = ""
+        self.oldSn = ""
+        self.code = ""
+        self.isUpdata = False
+        self.oldCurrentTestIndex = 0
+        self.currentTestIndex = 1
+        self._last_now = None
+        self.turn_state = False
+        self.currentMsgNum = 0
+
+
+        self.testNum = random.choice([2, 3, 4])
+        self.rssi = 0
+        self.servoCount = 0
+        self.servoCount = 0
+        self.m_p0_on_num = 0
+        self.m_p0_off_num = 0
+        self.m_p1_on_num = 0
+        self.m_p1_off_num = 0
+
+        self.m_p2_on_num = 0
+        self.m_p2_off_num = 0
+        self.m_p3_on_num = 0
+        self.m_p3_off_num = 0
+
+        self.light = 0.00
+        self.accel = 0.00
+        self.gyro  = 0.00
+        self.mag   = 0.00
+
+        self.test_rgb_result = False
+        self.test_lcd_result = False
+        self.test_btn_result = False
+        self.test_play_result = False
+        self.test_tf_result = False
+        self.test_adc_result = False
+        self.test_msg_result = False
+        self.test_wifi_result = False
+        self.test_gpio_result = False
+
+        self._sent_rgb_cmd = False
+        self._finish_rgb = False
+        self._waiting_rgb_cmd = False
+
+        self._sent_lcd_cmd = False
+        self._finish_lcd = False
+        self._waiting_lcd_cmd = False
+
+        self._sent_btn_cmd = False
+        self._finish_btn = False
+        self._waiting_btn_cmd = False
+
+        self.confirm_pressed = False
+        self.return_pressed = False
+        self.select_pressed = False
+
+        self._sent_tf_cmd = False
+        self._finish_tf = False
+        self._waiting_tf_cmd = False
+
+        self._sent_play_cmd = False
+        self._finish_play = False
+        self._waiting_play_cmd = False
+
+        self._sent_adc_cmd = False
+        self._finish_adc = False
+        self._waiting_adc_cmd = False
+
+        self._finish_i2c = False
+        self._sent_i2c_cmd = False
+        self._waiting_i2c_cmd = False
+
+
+        self._sent_msg_cmd = False
+        self._finish_msg = False
+        self._waiting_msg_cmd = False
+
+        self._sent_wifi_cmd = False
+        self._finish_wifi = False
+        self._waiting_wifi_cmd = False
+        self._wifi_retry_num = 0
+
+        self._msg_retry_num = 0
+        self._msg_Through_num = 0
+
+        self._sent_gpio_cmd = False
+        self._finish_gpio = False
+        self._waiting_gpio_cmd = False
+
+        self._finish_mp3 = False
+        self._sent_mp3_cmd = False
+        self._waiting_mp3_cmd = False
+
+        self._finish_base_power = False
+        self._sent_base_power_cmd = False
+        self._waiting_base_power_cmd = False
+
+        self._finish_base_servo = False
+        self._sent_base_servo_cmd = False
+        self._waiting_base_servo_cmd = False
+
+
+        self._finish_read_mac = False
+        self._sent_read_mac_cmd = False
+        self._waiting_read_mac_cmd = False
+
+        self.is_finish_write_sn_code = False
+        self.write_sn_code = False
+
+        self._waiting_write_sn_cmd = False
+        self._waiting_write_code_cmd = False
+
+    def find_mac(self, mac: str):
+        global g_db_connection, g_MesTableName
+
+        # 预先清空旧 SN，避免残留
+        self.oldSn = None
+
+        if not isinstance(mac, str) or not mac.strip():
+            return False
+
+        normalized_mac = mac.strip().upper()
+
+        # 获取现有连接（不尝试重连）
+        connection = g_db_connection if (
+                g_db_connection is not None and hasattr(g_db_connection, 'open') and g_db_connection.open) else None
+        if connection is None:
+            return False
+
+        try:
+            sql = "SELECT sn FROM `{}` WHERE UPPER(mac) = %s LIMIT 1".format(g_MesTableName)
+            with connection.cursor() as cursor:
+                cursor.execute(sql, (normalized_mac,))
+                row = cursor.fetchone()
+                if not row:
+                    return False
+
+                # 兼容不同 cursor 返回类型
+                if isinstance(row, (list, tuple)) and len(row) > 0:
+                    sn = row[0]
+                elif isinstance(row, dict):
+                    sn = row.get('sn') if 'sn' in row else (next(iter(row.values())) if row else None)
+                else:
+                    sn = row
+
+                if sn is None:
+                    return False
+
+                # 确保是字符串
+                if isinstance(sn, bytes):
+                    try:
+                        sn = sn.decode('utf-8')
+                    except Exception:
+                        sn = str(sn)
+
+                self.oldSn = str(sn)
+                return True
+
+        except pymysql.MySQLError:
+            return False
+        except Exception:
+            return False
+
+    def uploading(self,info):
+        global g_db_connection,g_MesTableName
+
+        # 获取现有连接（不尝试重新连接）
+        connection = g_db_connection if (g_db_connection is not None and hasattr(g_db_connection, 'open') and g_db_connection.open) else None
+        if connection is None:
+            return False
+
+        print("\nmac = :", self.mac)
+        print("\nsn = :", self.sn)
+        print("\nrandom_code = :", self.code)
+
+        try:
+            if not self.isUpdata:
+                with connection.cursor() as cursor:
+                    # 开始事务
+                    connection.begin()
+
+                    # 插入新记录
+                    insert_sql = "INSERT INTO `" + g_MesTableName + "` (mac, sn, code,info, time) VALUES (%s, %s, %s, %s,NOW())"
+                    cursor.execute(insert_sql, (self.mac, self.sn ,self.code, info))
+
+                    # 提交事务
+                    connection.commit()
+                    return True
+            else:
+                with connection.cursor() as cursor:
+                    # 开始事务
+                    connection.begin()
+
+                    # 根据MAC地址更新内容,但是不更新新记录
+                    update_sql = "UPDATE `{}` SET info = %s, time = NOW() WHERE UPPER(mac) = %s".format(g_MesTableName)
+                    cursor.execute(update_sql, (info, self.mac))
+
+
+                    # 提交事务
+                    connection.commit()
+                    return True
+
+        except pymysql.MySQLError as e:
+            if connection:
+                connection.rollback()
+            return False
+        except Exception as e:
+            if connection:
+                connection.rollback()
+            return False
+
+    def create_random_code(self,sn: str, mac: str) -> Tuple[bytes, Dict[str, str]]:
+        normalized_sn = sn.strip()
+        normalized_mac = mac.strip().upper()
+        MAC_PATTERN = re.compile(r"^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$")
+        if not normalized_sn:
+            raise ValueError("SN不能为空")
+        if not MAC_PATTERN.fullmatch(normalized_mac):
+            raise ValueError("MAC必须使用 AA:BB:CC:DD:EE:FF 格式")
+        device_secret_raw = secrets.token_bytes(32)
+        return str(device_secret_raw.hex())
+
+
+    def find_first_missing_sn_serial(self):
+        global g_db_connection, g_MesTableName
+
+        conn = g_db_connection if (g_db_connection is not None and getattr(g_db_connection, 'open', True)) else None
+        if conn is None:
+            return False, "MES未连接, 无法查询"
+
+        try:
+            cursor = conn.cursor()
+            # 如果你的代码是DictCursor，上面改成 cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+            sql = """
+            SELECT
+                sn,
+                SUBSTRING(sn, LENGTH(sn)-6, 6) AS serial_str,
+                CAST(SUBSTRING(sn, LENGTH(sn)-6, 6) AS UNSIGNED) AS serial_num,
+                RIGHT(sn,1) AS color,
+                LEFT(sn, LENGTH(sn)-7) AS real_prefix
+            FROM 7011_x_card_final
+            WHERE LENGTH(sn)>=7  
+              AND CAST(SUBSTRING(sn, LENGTH(sn)-6, 6) AS UNSIGNED) BETWEEN 1 AND 999999
+            ORDER BY serial_num ASC;
+            """
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            cursor.close()
+
+            serial_list = []
+            for row in rows:
+                # dict模式：row是字典；普通cursor：row是tuple
+                if isinstance(row, dict):
+                    val = row.get("serial_num")
+                else:
+                    if len(row) < 3:
+                        continue
+                    val = row[2]
+
+                if val is not None and isinstance(val, int):
+                    serial_list.append(val)
+
+            if not serial_list:
+                return True, 1
+
+            missing = None
+            expect = 1
+            for num in serial_list:
+                if num > expect:
+                    missing = expect
+                    break
+                expect = num + 1
+
+            # 全部连续无缺口，返回最后一个+1（即expect）
+            if missing is None:
+                missing = expect
+
+            return True, missing
+
+        except Exception as e:
+            import traceback
+            err_text = f"查询异常:{str(e)}\n{traceback.format_exc()}"
+            return False, err_text
+
+    def create_sn(self,serial: int,
+                  product_type: str = "13",
+                  product_name: str = "48",
+                  version: str = "A",
+                  reserved: str = "00",
+                  check: str = "A",
+                  color: str = "W",
+                  prod_date: Optional[datetime.date] = None
+                  ) -> str:
+
+        # 验证 serial
+        if not isinstance(serial, int) or serial < 0 or serial > 999999:
+            raise ValueError("流水号必须是 0 到 999999 之间的整数（含边界）")
+
+        # 简单长度验证
+        if len(product_type) != 2 or len(product_name) != 2 or len(version) != 1 or len(reserved) != 2:
+            raise ValueError("产品类型/产品名称/版本/预留长度无效")
+        if len(check) != 1 or len(color) != 1:
+            raise ValueError("校验位和产品颜色必须为单个字符")
+
+        # 生产日期（默认今天）
+        if prod_date is None:
+            prod_date = datetime.date.today()
+
+        iso_year, iso_week, _ = prod_date.isocalendar()
+        year_part = f"{(iso_year % 100):02d}"
+        week_part = f"{iso_week:02d}"
+        serial_part = f"{serial:06d}"
+
+        sn = f"{product_type}{product_name}{version}{reserved}{year_part}{week_part}{check}{serial_part}{color}"
+        return sn
+
+
+    def set_work_code(self, com, isStart):
+        if com and com != self.port and self.isOpenPort:
+            try:
+                if QThread.currentThread() == self.thread():
+                    self._close_serial()
+                else:
+                    QMetaObject.invokeMethod(self, "_close_serial", Qt.BlockingQueuedConnection)
+            except Exception:
+                # 兜底：尝试直接关闭
+                try:
+                    self._close_serial()
+                except Exception:
+                    pass
+
+        # 更新端口与启动标志
+        self.port = com
+        self.isStart = isStart
+
+
+    def Is_Pass_Or_Ng(self, var,test = ""):
+        if self.currentTestIndex == self.TestType.rgb.value and self._finish_rgb:
+            if var:
+                self.currentTestIndex += 1
+                self.test_rgb_result = True
+            else:
+                self.signal_set_ui_page.emit(self.work,False, 1, test, "")
+                self.test_rgb_result = False
+                self.currentTestIndex = 0
+
+        elif self.currentTestIndex == self.TestType.lcd.value and self._finish_lcd:
+            if var:
+                self.currentTestIndex += 1
+                self.test_lcd_result = True
+            else:
+                self.signal_set_ui_page.emit(self.work,False, 1, test, "")
+                self.test_lcd_result = False
+                self.currentTestIndex = 0
+
+        elif self.currentTestIndex == self.TestType.i2c.value and self._finish_i2c:
+            if var:
+                self.currentTestIndex += 1
+            else:
+                self.signal_set_ui_page.emit(self.work,False, 1, "I2C异常", "")
+                self.currentTestIndex = 0
+
+        elif self.currentTestIndex == self.TestType.btn.value and self._finish_btn:
+            if var:
+                self.currentTestIndex += 1
+                self.test_btn_result = True
+            else:
+                self.signal_set_ui_page.emit(self.work,False, 1, test, "")
+                self.test_btn_result = False
+                self.currentTestIndex = 0
+
+        elif self.currentTestIndex == self.TestType.tf.value and self._finish_tf:
+            if var:
+                self.currentTestIndex += 1
+                self.test_tf_result = True
+            else:
+                self.signal_set_ui_page.emit(self.work,False, 1, "无法读取TF卡", "")
+                self.currentTestIndex = 0
+
+        elif self.currentTestIndex == self.TestType.mp3.value and self._finish_mp3:
+            if var:
+                self.currentTestIndex += 1
+            else:
+                self.signal_set_ui_page.emit(self.work,False, 1, "音频播放异常", "")
+                self.currentTestIndex = 0
+
+        elif self.currentTestIndex == self.TestType.i2c.value and self._sent_play_cmd:
+            if var:
+                self.currentTestIndex += 1
+                self.test_play_result = True
+            else:
+                self.signal_set_ui_page.emit(self.work,False, 1, "喇叭功能异常", "")
+                self.currentTestIndex = 0
+
+
+        elif self.currentTestIndex == self.TestType.adc.value and self._finish_adc:
+            if var:
+                self.currentTestIndex += 1
+                self.test_adc_result = True
+            else:
+                self.signal_set_ui_page.emit(self.work,False, 1, "麦克风异常", "")
+                self.currentTestIndex = 0
+
+        elif self.currentTestIndex == self.TestType.msg.value and self._finish_msg or test:
+            if var:
+                self.currentTestIndex += 1
+                self.test_msg_result = True
+            else:
+                self.signal_set_ui_page.emit(self.work,False, 1, test, "")
+                self.currentTestIndex = 0
+
+        elif self.currentTestIndex == self.TestType.wifi.value and self._finish_wifi:
+            if var:
+                self.currentTestIndex += 1
+                self.test_wifi_result = True
+            else:
+                self.signal_set_ui_page.emit(self.work,False, 1, "WIFI连接失败", "")
+                self.currentTestIndex = 0
+
+        elif self.currentTestIndex == self.TestType.gpio.value and self._finish_gpio:
+            if var:
+                self.currentTestIndex += 1
+            else:
+                self.signal_set_ui_page.emit(self.work,False, 1, "GPIO异常", "")
+                self.currentTestIndex = 0
+
+
+    def open_serial_link(self):
+        if not self.port:
+            print("open_serial_link: 未指定端口")
+            return False
+
+        available = [p.portName() for p in QSerialPortInfo.availablePorts()]
+        if self.port not in available:
+            print(f"open_serial_link: 请求的端口 {self.port} 不在可用端口列表: {available}")
+            return False
+
+        try:
+            if self.serial is not None:
+                self._close_serial()
+
+            self.serial = QSerialPort()
+            self.serial.setPortName(self.port)
+            self.serial.setBaudRate(115200)
+            self.serial.setDataBits(QSerialPort.Data8)
+            self.serial.setParity(QSerialPort.NoParity)
+            self.serial.setStopBits(QSerialPort.OneStop)
+            self.serial.setFlowControl(QSerialPort.NoFlowControl)
+
+            if self.serial.open(QIODevice.ReadWrite):
+                print(f"\n成功打开串口: {self.port}")
+                self.signal_set_ui_page.emit(self.work,False, 2, "", "")
+                try:
+                    self.serial.clear()
+                except Exception:
+                    pass
+                time.sleep(0.05)
+
+                try:
+                    self.serial.readyRead.connect(self.on_serial_read)
+                except Exception as e:
+                    print("readyRead connect 异常:", e)
+
+                # reset states
+                self.initVars()
+
+                self.isOpenPort = True
+                QTimer.singleShot(2000, self._start_periodic_write)  # 延迟 2s 启动写定时器
+                return True
+            else:
+                print(f"\n打开串口失败: {self.port}")
+                self.isOpenPort = False
+                return False
+        except Exception as e:
+            print("open_serial_link 异常:", e)
+            self.isOpenPort = False
+            return False
+
+    def _close_serial(self):
+        # 1) 停写定时器，避免并发写
+        try:
+            self._stop_periodic_write()
+        except Exception:
+            pass
+
+        # 2) 标记端口已关闭，避免其它逻辑再尝试写
+        self.isOpenPort = False
+
+        if not self.serial:
+            return
+
+        try:
+            # 3) 断开信号
+            try:
+                self.serial.readyRead.disconnect(self.on_serial_read)
+            except Exception:
+                pass
+
+            # 4) 嘗試短等待 pending bytes 写入排空（可选，短超时）
+            try:
+                self.serial.waitForBytesWritten(200)  # 200 ms
+            except Exception:
+                pass
+
+            # 5) 清理缓冲
+            try:
+                self.serial.clear()
+            except Exception:
+                pass
+
+            # 6) 关闭端口
+            try:
+                self.serial.close()
+            except Exception:
+                pass
+
+            # 7) 释放引用（不要依赖 deleteLater 必须由事件循环处理）
+            try:
+                self.serial = None
+            except Exception:
+                self.serial = None
+
+        finally:
+            # 8) 重置状态标志（按需）
+            self._sent_rgb_cmd = False
+            self._finish_rgb = False
+            self._waiting_rgb_cmd = False
+            self._last_now = 0.0
+            # ... 重置其它标志 ...
+            self._recv_accum = ""
+            self.isOpenPort = False
+
+    def _start_periodic_write(self):
+        if not self.isOpenPort or self.serial is None:
+            return
+        if self._write_timer is None:
+            self._write_timer = QTimer()
+            self._write_timer.timeout.connect(self._on_write_timer)
+            self._write_timer.start(100)
+
+    def _stop_periodic_write(self):
+        if self._write_timer is not None:
+            try:
+                if self._write_timer.isActive():
+                    self._write_timer.stop()
+            except Exception:
+                pass
+            try:
+                self._write_timer.timeout.disconnect(self._on_write_timer)
+            except Exception:
+                pass
+            self._write_timer = None
+            print("写入定时器已停止")
+
+    # 指令发送
+    def _on_write_timer(self):
+        global DB_LOCK
+        if not self.isOpenPort or self.serial is None:
+            self._stop_periodic_write()
+            return
+
+        now = time.time()
+
+        if self.currentTestIndex == self.TestType.rgb.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+            t_cmd = self.cmd_rgb
+            if not self._finish_rgb:
+                self.signal_set_ui_page.emit(self.work,False, 3, t_testPro, "\n\n\n\n\n[RGB灯]\n发送控制指令中...")
+                cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                if (not self._waiting_rgb_cmd) or (now - self._last_now >= 2.0):
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(200)
+                        except Exception:
+                            pass
+                        self._sent_rgb_cmd = True
+                        self._waiting_rgb_cmd = True
+                        self._last_now = now
+                        print(f"[发送] RGB cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] RGB cmd={t_cmd}")
+            else:
+                self.signal_set_ui_page.emit(self.work,True, 3, t_testPro, "\n << < 人工查看 >> >\n\n[RGB灯]\n[电源指示灯]\n\n\n是否点亮?")
+
+        if self.currentTestIndex == self.TestType.lcd.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+            if not self._finish_lcd:
+                t_cmd = self.cmd_lcd_rgb
+                self.signal_set_ui_page.emit(self.work,True, 3, t_testPro, "\n << < 人工查看 >> >\n\n[LCD显示屏]\n\n\n\n是否无坏点,无划痕?")
+                cmd_bytes = (self.cmd_lcd_rgb + "\r\n").encode('utf-8')
+                if (not self._waiting_lcd_cmd) or (now - self._last_now > 15.0):
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(200)
+                        except Exception:
+                            pass
+                        self._sent_lcd_cmd = True
+                        self._finish_lcd = True
+                        self._waiting_lcd_cmd = True
+                        self._last_now = now
+                        print(f"[发送] LCD显示屏 cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] LCD显示屏 cmd={t_cmd}")
+
+        if self.currentTestIndex == self.TestType.tf.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+            t_cmd = self.cmd_tf
+            if not self._finish_tf:
+                self.signal_set_ui_page.emit(self.work,False, 3, t_testPro, "\n\n\n\n\n[TF卡自检]\n")
+                cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                if (not self._waiting_tf_cmd) or (now - self._last_now >= 2.0):
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(500)
+                        except Exception:
+                            pass
+                        self._sent_tf_cmd = True
+                        self._waiting_tf_cmd = True
+                        self._last_now = now
+                        print(f"[发送] TF卡自检 cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] TF卡自检 cmd={t_cmd}")
+            else:
+                self.Is_Pass_Or_Ng(self.test_tf_result)
+
+        if self.currentTestIndex == self.TestType.mp3.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+            t_cmd = self.cmd_mp3
+            self.signal_set_ui_page.emit(self.work,True, 3, t_testPro, "\n << < 人工聆听 >> >\n\n[音频播放测试]\n\n\n\n是否正常播放?")
+            cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+            if (not self._waiting_mp3_cmd) or (now - self._last_now >= 5.0):
+                try:
+                    bytes_written = self.serial.write(cmd_bytes)
+                    try:
+                        self.serial.waitForBytesWritten(500)
+                    except Exception:
+                        pass
+                    self._sent_mp3_cmd = True
+                    self._waiting_mp3_cmd = True
+                    self._finish_mp3 = True
+                    self._last_now = now
+                    print(f"[发送] mp3音频播放 cmd={t_cmd} bytes={bytes_written}")
+                except Exception:
+                    print(f"[发送失败] mp3音频播放 cmd={t_cmd}")
+
+        if self.currentTestIndex == self.TestType.btn.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+            t_cmd = self.cmd_btn
+            if not self._finish_btn:
+                self.signal_set_ui_page.emit(self.work,False, 3, t_testPro, "\n\n\n\n\n[功能按键测试]\n正在检测按键是否按下...")
+                cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                if (not self._waiting_btn_cmd) or (now - self._last_now > 2.0):
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(200)
+                        except Exception:
+                            pass
+                        self._sent_btn_cmd = True
+                        self._waiting_btn_cmd = True
+                        self._last_now = now
+                        print(f"[发送] 功能按键检测 cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] 功能按键检测 cmd={t_cmd}")
+            else:
+                self.Is_Pass_Or_Ng(True)
+
+        if self.currentTestIndex == self.TestType.i2c.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+            t_cmd = self.cmd_i2c
+            if not self._finish_i2c:
+                self.signal_set_ui_page.emit(self.work, False, 3, t_testPro, "\n\n\n\n\n[I2C自检]\n")
+                cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                if (not self._waiting_i2c_cmd) or (now - self._last_now > 2.0):
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(500)
+                        except Exception:
+                            pass
+                        self._sent_i2c_cmd = True
+                        self._waiting_i2c_cmd = True
+                        self._last_now = now
+                        print(f"[发送] I2C自检 cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] I2C卡自检 cmd={t_cmd}")
+            else:
+                self.Is_Pass_Or_Ng(True)
+
+        if self.currentTestIndex == self.TestType.adc.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+            t_cmd = self.cmd_adc
+            if not self._finish_adc:
+                self.signal_set_ui_page.emit(self.work,False, 3, t_testPro, "\n\n\n\n\n[ADC自检]\n")
+                cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                if (not self._waiting_adc_cmd) or (now - self._last_now > 2.0):
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(500)
+                        except Exception:
+                            pass
+                        self._sent_adc_cmd = True
+                        self._waiting_adc_cmd = True
+                        self._last_now = now
+                        print(f"[发送] ADC自检 cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] ADC卡自检 cmd={t_cmd}")
+            else:
+                self.Is_Pass_Or_Ng(True)
+
+        if self.currentTestIndex == self.TestType.msg.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+            t_cmd = self.cmd_msg
+            if not self._finish_msg:
+                self.signal_set_ui_page.emit(self.work, False, 3, t_testPro,f"\n\n\n[传感器自检]\n[光线]:{self.light}\n[加速度]:{self.accel}\n[陀螺仪]:{self.gyro}\n测试次数:{self.currentMsgNum}")
+                cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                if (not self._waiting_msg_cmd) or (now - self._last_now > 2.0):
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(500)
+                        except Exception:
+                            pass
+                        self._sent_msg_cmd = True
+                        self._waiting_msg_cmd = True
+                        self._last_now = now
+                        print(f"[发送] 传感器自检 cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] 传感器自检 cmd={t_cmd}")
+            else:
+                self.Is_Pass_Or_Ng(True)
+
+        if self.currentTestIndex == self.TestType.wifi.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+            t_cmd = self.cmd_wifi
+            self.ssid, self.password
+            if self.rssi != 0:
+                self.signal_set_ui_page.emit(self.work,False, 3, t_testPro, f"\n\n\n\n\n[WIFI自检]\n[SSID]:{self.ssid}\n[CODE]:{self.password}" + "RSSI: " + str(self.rssi))
+            else:
+                self.signal_set_ui_page.emit(self.work,False, 3, t_testPro, f"\n\n\n\n\n[WIFI自检]\n[SSID]:{self.ssid}\n[CODE]:{self.password}")
+
+            if not self._finish_wifi:
+                cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                if (not self._waiting_wifi_cmd) or (now - self._last_now >= 5.0):
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(500)
+                        except Exception:
+                            pass
+                        self._sent_wifi_cmd = True
+                        self._waiting_wifi_cmd = True
+                        self._last_now = now
+                        print(f"[发送] WIFI自检 cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] WIFI自检 cmd={t_cmd}")
+            else:
+                self.Is_Pass_Or_Ng(True)
+
+        if self.currentTestIndex == self.TestType.gpio.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+
+            if self.m_p0_on_num > self.testNum:
+                self._finish_base_servo = True
+
+            if not self._finish_base_servo:
+                t_cmd = self.cmd_gpio
+                cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                try:
+                    bytes_written = self.serial.write(cmd_bytes)
+                    self.serial.waitForBytesWritten(1000)
+                    print(f"[发送] GPIO读取 cmd={t_cmd} bytes={bytes_written}")
+                except Exception:
+                    print(f"[发送失败] GPIO读取 cmd={t_cmd}")
+                    pass
+                t_time = 2
+                if self.turn_state:
+                    t_cmd = self.cmd_servo_turn
+                    self.signal_set_ui_page.emit(self.work,False, 3, t_testPro, "\n\n\n\n\n[金手指自检-TREN]")
+                    cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                    if (now - self._last_now > t_time):
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(1000)
+                            self.m_p0_on_num += 1
+                            print(f"[发送] 舵机转动 cmd={t_cmd} bytes={bytes_written}")
+                        except Exception:
+                            print(f"[发送失败] 舵机转动 cmd={t_cmd}")
+
+                        self._last_now = now
+                        self.turn_state = not self.turn_state
+                else:
+                    t_cmd = self.cmd_servo_stop
+                    self.signal_set_ui_page.emit(self.work,False, 3, t_testPro, "\n\n\n\n\n[金手指自检-ZERO]")
+                    cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                    if (now - self._last_now > t_time):
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(1000)
+                            self.m_p0_on_num += 1
+                            print(f"[发送] 舵机归位自检 cmd={t_cmd} bytes={bytes_written}")
+                        except Exception:
+                            print(f"[发送失败] 舵机归位自检 cmd={t_cmd}")
+                            pass
+
+                        self._last_now = now
+                        self.turn_state = not self.turn_state
+            else:
+                self.currentTestIndex += 1
+
+        if self.currentTestIndex == self.TestType.mes.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+
+            if self.msn == 0:
+                if not self.mac:
+                    t_cmd = self.cmd_read_mac
+                    if not self._finish_read_mac:
+                        self.signal_set_ui_page.emit(self.work, False, 3, t_testPro, "\n\n\n\n\n[读取MAC地址]\n")
+                        cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                        if (not self._waiting_read_mac_cmd) or (now - self._last_now > 2.0):
+                            try:
+                                bytes_written = self.serial.write(cmd_bytes)
+                                try:
+                                    self.serial.waitForBytesWritten(500)
+                                except Exception:
+                                    pass
+                                self._sent_read_mac_cmd = True
+                                self._waiting_read_mac_cmd = True
+                                self._last_now = now
+                                print(f"[发送] 读取MAC地址 cmd={t_cmd} bytes={bytes_written}")
+                            except Exception:
+                                print(f"[发送失败] 读取MAC地址 cmd={t_cmd}")
+                else:
+                    self.signal_set_ui_page.emit(self.work, False, 3, t_testPro, f"\n\n\n\n[读取MAC地址]\n{self.mac}")
+                    if now - self._last_now > 1.0:
+                        self.isUpdata = self.find_mac(self.mac)
+                        if self.isUpdata:
+                            self.currentTestIndex += 1
+                        else:
+                            self.msn = 1
+                            self._last_now = now
+
+            if self.msn == 1:
+                if not self.sn:
+                    ok, serial = self.find_first_missing_sn_serial()
+
+                    if ok:
+                        self.signal_set_ui_page.emit(self.work, False, 3, t_testPro, "\n\n\n\n\n[生成SN码]\n")
+                        self.sn = self.create_sn(serial)
+                        self._last_now = now
+                else:
+                    self.signal_set_ui_page.emit(self.work, False, 3, t_testPro, f"\n\n\n\n[生成SN码]\n{self.sn}")
+                    self.msn = 2
+
+
+
+            if self.msn == 2:
+                if not self.code:
+                    self.signal_set_ui_page.emit(self.work, False, 3, t_testPro, "\n\n\n\n\n[生成设备密钥]\n")
+                    self.code = self.create_random_code(self.sn, self.mac)
+                    self._last_now = now
+                else:
+                    self.signal_set_ui_page.emit(self.work, False, 3, t_testPro,f"\n\n\n\n[生成设备密钥]\n{self.code[:22]}\n{self.code[22:44]}\n{self.code[44:]}")
+                    self.msn = 3
+
+
+            if self.msn == 3:
+                try:
+                    self.signal_set_ui_page.emit(self.work, False, 3, t_testPro, "\n\n\n\n\n[上传MES系统]\n")
+                    if self.uploading(""):
+                        print("上传MES成功:")
+                        self.currentTestIndex += 1
+                    else:
+                        print("上传MES失败")
+                        self.signal_set_ui_page.emit(self.work, False, 1, "上传MES系统失败", "")
+                        self.currentTestIndex = -1
+                except ValueError as e:
+                    print("上传MES失败错误:", e)
+
+
+        if self.currentTestIndex == self.TestType.writeSn.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+            if not self.isUpdata:
+                if not self.is_finish_write_sn_code:
+                    if not self.write_sn_code:
+                        t_cmd = ("tool call write_sn sn=" +  str(self.sn) +"\n")
+                        self.signal_set_ui_page.emit(self.work,False, 3, t_testPro, "\n\n\n\n\n[写SN码]\n" + str(self.sn))
+                        cmd_bytes = t_cmd.encode('utf-8')
+                        if (not self._waiting_write_sn_cmd) or (now - self._last_now >= 3.0):
+                            try:
+                                bytes_written = self.serial.write(cmd_bytes)
+                                try:
+                                    self.serial.waitForBytesWritten(200)
+                                except Exception:
+                                    pass
+                                self._waiting_write_sn_cmd = True
+                                self._last_now = now
+                                print(f"[发送] 写SN码 cmd={t_cmd} bytes={bytes_written}")
+                            except Exception:
+                                print(f"[发送失败] 写SN码 cmd={t_cmd}")
+                    else:
+                        t_cmd = ("tool call write_device_secret device_secret=" +  str(self.code) +"\n")
+                        self.signal_set_ui_page.emit(self.work, False, 3, t_testPro,f"\n\n\n\n[写设备密钥]\n{self.code[:22]}\n{self.code[22:44]}\n{self.code[44:]}")
+                        cmd_bytes = (t_cmd).encode('utf-8')
+                        if (not self._waiting_write_code_cmd) or (now - self._last_now >= 3.0):
+                            try:
+                                bytes_written = self.serial.write(cmd_bytes)
+                                try:
+                                    self.serial.waitForBytesWritten(200)
+                                except Exception:
+                                    pass
+                                self._waiting_write_code_cmd = True
+                                self._last_now = now
+                                print(f"[发送] 写设备密钥 cmd={t_cmd} bytes={bytes_written}")
+                            except Exception:
+                                print(f"[发送失败] 写设备密钥 cmd={t_cmd}")
+                else:
+                    self.currentTestIndex += 1
+            else:
+                self.currentTestIndex += 1
+
+
+        if self.currentTestIndex == self.TestType.finish.value:
+            self.signal_set_ui_page.emit(self.work,False, 0, f"测试通过\n\n[设备SN]\n{self.oldSn if self.isUpdata else self.sn}", "")
+
+
+    # 指令接收
+    def on_serial_read(self):
+        if not self.serial:
+            return
+        try:
+            qba = self.serial.readAll()
+            chunk = qba.data() if hasattr(qba, "data") else bytes(qba)
+        except Exception:
+            chunk = b''
+            print("serial.readAll() 读取异常")
+        if not chunk:
+            return
+        try:
+            recv_str = chunk.decode('utf-8', errors='replace')
+        except Exception:
+            recv_str = ''
+            print("recv data decode err")
+
+        self._recv_accum += recv_str
+        if len(self._recv_accum) > 5000:
+            self._recv_accum = self._recv_accum[-5000:]
+
+
+        # --------------------------------- 主控 ---------------------------------
+        # RGB 检查
+        if self.currentTestIndex == self.TestType.rgb.value:
+            if not self._finish_rgb:
+                expected_echo = self.cmd_rgb
+                expected_json = {"status": "ok"}
+
+                obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo, expected_json=expected_json)
+                if obj is not None:
+                    self._finish_rgb = True
+                    self._waiting_rgb_cmd = False
+                    print(">>>>>>>>收到 RGB 确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+        if self.currentTestIndex == self.TestType.lcd.value:
+            if not self._finish_lcd:
+                expected_echo = self.cmd_lcd_rgb
+                obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo)
+                if obj is not None:
+                    self._finish_lcd = True
+                    self._waiting_lcd_cmd = False
+                    print(">>>>>>>>收到 LCD 确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+        if self.currentTestIndex == self.TestType.btn.value:
+            if not self._finish_btn:
+                expected_status = "ok"
+                keys = ["confirm_pressed", "return_pressed", "select_pressed"]
+                res = self.contains_confirmation2(self._recv_accum,expected_echo=None,expected_status=expected_status,keys=keys)
+                if res is not None:
+                    parsed, end_index = res
+                    if not self.confirm_pressed:
+                        self.confirm_pressed = parsed.get("confirm_pressed")
+                    if not self.return_pressed:
+                        self.return_pressed = parsed.get("return_pressed")
+                    if not self.select_pressed:
+                        self.select_pressed = parsed.get("select_pressed")
+
+                    if self.confirm_pressed and self.return_pressed and self.select_pressed:
+                        self._finish_btn = True
+                        self._waiting_btn_cmd = False
+                    # 截断缓冲
+                    self._recv_accum = self._recv_accum[end_index:]
+                    print(">>>>>>>>收到 功能按键确认 JSON:", json.dumps(res, ensure_ascii=False))
+
+
+
+        if self.currentTestIndex == self.TestType.tf.value:
+            if not self._finish_tf:
+                expected_echo = self.cmd_tf
+                expected_json = {"status": "ok"}
+
+                obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo, expected_json=expected_json)
+                if obj is not None:
+                    self._finish_tf = True
+                    self._waiting_tf_cmd = False
+                    self.test_tf_result = True
+                    print(">>>>>>>>收到 TF卡确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+                expected_json = {"status": "error"}
+                obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo, expected_json=expected_json)
+                if obj is not None:
+                    self._finish_tf = True
+                    self._waiting_tf_cmd = False
+                    self.test_tf_result = False
+                    print(">>>>>>>>收到 TF卡确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+        if self.currentTestIndex == self.TestType.i2c.value:
+            if not self._finish_i2c:
+                expected_status = "ok"
+                keys = ["devices"]
+                res = self.contains_confirmation2(self._recv_accum, expected_echo=None,expected_status=expected_status, keys=keys)
+                if res is not None:
+                    parsed, end_index = res
+                    device_list = parsed.get("devices", [])
+                    # 判断是列表，并且恰好5个i2c地址
+                    if isinstance(device_list, list) and len(device_list) == 5:
+                        self._finish_i2c = True
+                        self._waiting_i2c_cmd = False
+                        self.test_i2c_result = True
+
+                    if isinstance(device_list, list) and len(device_list) > 1 and len(device_list) < 5:
+                        self._finish_i2c = True
+                        self._waiting_i2c_cmd = False
+                        self.test_i2c_result = True
+                        self.Is_Pass_Or_Ng(False)
+
+                    # 截断缓冲，无论地址数量是否达标，这条报文都消费掉
+                    self._recv_accum = self._recv_accum[end_index:]
+                    print(">>>>>>>>收到 I2C扫描确认, devices:", device_list)
+
+
+        if self.currentTestIndex == self.TestType.adc.value:
+            if not self._finish_adc:
+                expected_status = "success"
+                keys = ["sound_raw_avg", "sound_raw_max", "sound_mv_avg", "samples"]
+                res = self.contains_confirmation2(self._recv_accum,expected_echo=None,expected_status=expected_status,keys=keys)
+                if res is not None:
+                    parsed, end_index = res
+                    raw_avg = parsed.get("sound_raw_avg")
+                    raw_max = parsed.get("sound_raw_max")
+                    mv_avg = parsed.get("sound_mv_avg")
+                    samples = parsed.get("samples")
+                    if raw_avg and raw_max and mv_avg and samples:
+                        self._finish_adc = True
+                        self._waiting_adc_cmd = False
+                        self.test_adc_result = True
+                    # 截断缓冲
+                    self._recv_accum = self._recv_accum[end_index:]
+                    print(">>>>>>>>收到 ADC确认:", raw_avg, raw_max, mv_avg, samples)
+
+        if self.currentTestIndex == self.TestType.msg.value:
+            if not self._finish_msg:
+                expected_echo = self.cmd_msg
+                keys = ["light_lux", "accel", "gyro"]
+                res = self.contains_confirmation2(self._recv_accum, expected_echo=expected_echo,expected_status="ok", keys=keys)
+                if res is not None:
+                    parsed, end_index = res
+                    self.light = parsed.get("light_lux")
+                    self.accel = parsed.get("accel")  # 期望 list/tuple
+                    self.gyro  = parsed.get("gyro")
+                    self._recv_accum = self._recv_accum[end_index:]
+
+
+                    bad = False
+                    errorInfo = ""
+                    if self.light == 0.00:
+                        errorInfo = f"光线传感器异常\n{self.light}\n测试次数:{self.currentMsgNum}"
+                        bad = True
+                    if not bad:
+                        if isinstance(self.accel, (list, tuple)) and all(x == 0.00 for x in self.accel):
+                            errorInfo = f"加速度传感器异常\n{self.accel}\n测试次数:{self.currentMsgNum}"
+                            bad = True
+                    if not bad:
+                        if isinstance(self.gyro, (list, tuple)) and all(x == 0.00 for x in self.gyro):
+                            errorInfo = f"陀螺仪异常\n{self.gyro}\n测试次数:{self.currentMsgNum}"
+                            bad = True
+
+
+                    self._waiting_msg_cmd = False
+                    #bad = False
+                    self.currentMsgNum += 1
+                    if bad:
+                        self._msg_retry_num += 1
+                        print("存在 0 值")
+                    else:
+                        self._msg_Through_num += 1
+
+                    if self._msg_retry_num > 3:
+                        self.Is_Pass_Or_Ng(False, errorInfo)
+
+                    if self._msg_Through_num > 3:
+                        self._finish_msg = True
+                        self.test_msg_result = True
+
+                    print(">>>>>>>>收到 六轴确认:", self.light, self.accel, self.gyro)
+
+
+        if self.currentTestIndex == self.TestType.wifi.value:
+            if not self._finish_read_mac:
+                expected_status = "ok"
+                keys = ["ip", "rssi"]
+                res = self.contains_confirmation2(self._recv_accum, expected_echo=None, expected_status=expected_status,keys=keys)
+                if res is not None:
+                    parsed, end_index = res
+                    ip = parsed.get("ip")
+                    self.rssi = parsed.get("rssi")
+                    if self.rssi >= -70:
+                    #if self.rssi >= -100:
+                        self._finish_wifi = True
+                        self._waiting_wifi_cmd = False
+                        self.test_wifi_result = True
+                    print(">>>>>>>>收到 WIFI确认:", ip, self.rssi)
+
+
+        if self.currentTestIndex == self.TestType.mes.value:
+            if not self.mac:
+                expected_echo = self.cmd_read_mac
+                expected_status = "ok"
+                # 不给 keys -> 返回完整解析的 JSON 对象
+                res = self.contains_confirmation2(self._recv_accum,
+                                                  expected_echo=expected_echo,
+                                                  expected_status=expected_status,
+                                                  keys=None)  # or just omit keys parameter
+                if res is not None:
+                    parsed, end_index = res
+                    mac = parsed.get("mac")
+                    if mac:
+                        self.mac = mac
+                    # 截断缓冲
+                    self._recv_accum = self._recv_accum[end_index:]
+                    print(">>>>>>>>收到 MAC确认:", mac)
+
+        if self.currentTestIndex == self.TestType.writeSn.value:
+            if not self.is_finish_write_sn_code:
+                expected_status = "ok"
+
+                if not self.write_sn_code:
+                    # 阶段1：只处理带sn字段的ok报文
+                    res = self.contains_confirmation2(self._recv_accum, expected_echo=None,
+                                                      expected_status=expected_status, keys=None)
+                    if res is not None:
+                        parsed, end_index = res
+                        # 关键：必须要有sn字段才认为是本阶段有效包
+                        sn = parsed.get("sn")
+                        if sn is not None:
+                            if sn == self.sn:
+                                self.write_sn_code = True
+                                print(">>>>>>>>收到 SN码确认:", sn)
+                        else:
+                            # 当前阶段不需要这个包，但是仍然消费掉，清掉缓冲区旧垃圾包
+                            self._recv_accum = self._recv_accum[end_index:]
+
+                else:
+                    # 阶段2：只处理带device_secret字段的ok报文
+                    res = self.contains_confirmation2(self._recv_accum, expected_echo=None,
+                                                      expected_status=expected_status, keys=None)
+                    if res is not None:
+                        parsed, end_index = res
+                        code = parsed.get("device_secret")
+                        if code is not None:
+                            if code == self.code:
+                                self.is_finish_write_sn_code = True
+                                print(">>>>>>>>收到 设备密钥码确认:", code)
+                        else:
+                            # 这是旧sn应答包，消费丢弃，清缓冲区，防止卡死
+                            self._recv_accum = self._recv_accum[end_index:]
+
+
+
+    # 提取 echo+json 配对（按回显后紧随的 JSON）
+    def extract_echo_json_pairs(self, text: str) -> List[Tuple[str, Dict[str, Any]]]:
+        pairs: List[Tuple[str, Dict[str, Any]]] = []
+        for m in re.finditer(r'(^|\r?\n)\s*(tool\s+call[^\r\n]+)\s*(\r?\n|$)', text, re.I):
+            echo = m.group(2).strip()
+            search_start = m.end()
+            jm = re.search(r'\{.*?\}', text[search_start:], re.S)
+            if not jm:
+                continue
+            jtext = jm.group(0)
+            try:
+                obj = json.loads(jtext)
+            except Exception:
+                continue
+            pairs.append((echo, obj))
+        return pairs
+
+    def json_matches(self, obj: Dict[str, Any], expected: Dict[str, Any]) -> bool:
+        def _match_val(val, exp) -> bool:
+            if callable(exp):
+                try:
+                    return bool(exp(val))
+                except Exception:
+                    return False
+            if isinstance(exp, dict):
+                if not isinstance(val, dict):
+                    return False
+                return all(_match_val(val.get(k), v) for k, v in exp.items())
+            if isinstance(exp, (list, tuple)):
+                if not isinstance(val, (list, tuple)) or len(val) != len(exp):
+                    return False
+                return all(_match_val(a, b) for a, b in zip(val, exp))
+            try:
+                return val == exp
+            except Exception:
+                return False
+        return all(_match_val(obj.get(k), v) for k, v in expected.items())
+
+
+    def extract_json_objects(self, text: str) -> List[Dict[str, Any]]:
+        """返回文本中能解析的所有 JSON 对象（按出现顺序）。"""
+        objs: List[Dict[str, Any]] = []
+        for m in re.finditer(r'\{.*?\}', text, re.S):
+            j = m.group(0)
+            try:
+                obj = json.loads(j)
+                if isinstance(obj, dict):
+                    objs.append(obj)
+            except Exception:
+                continue
+        return objs
+
+    def json_matches(self, obj: Dict[str, Any], expected: Dict[str, Any]) -> bool:
+        """
+        宽松匹配：expected 的值可以是常量、可调用或 'true'/'false' 字符串。
+        - 如果 expected 为 'true'/'false'（字符串），会接受 obj 中为 True/False 或 "true"/"false" 或 1/0。
+        - 数字/字符串会用 str() 比较（便于 "119" vs 119 的情况）。
+        - 嵌套 dict/list 会递归比较。
+        """
+
+        def _match_val(val, exp) -> bool:
+            # callable
+            if callable(exp):
+                try:
+                    return bool(exp(val))
+                except Exception:
+                    return False
+
+            # expected is 'true'/'false' string -> accept bool/str/int
+            if isinstance(exp, str) and exp.lower() in ("true", "false"):
+                exp_bool = (exp.lower() == "true")
+                if isinstance(val, bool):
+                    return val == exp_bool
+                if isinstance(val, str):
+                    return val.lower() == exp.lower()
+                if isinstance(val, (int, float)):
+                    # treat 0 as False, others as True
+                    return bool(val) == exp_bool
+                return False
+
+            # nested dict
+            if isinstance(exp, dict):
+                if not isinstance(val, dict):
+                    return False
+                return all(_match_val(val.get(k), v) for k, v in exp.items())
+
+            # list/tuple expected
+            if isinstance(exp, (list, tuple)):
+                if not isinstance(val, (list, tuple)) or len(val) != len(exp):
+                    return False
+                return all(_match_val(a, b) for a, b in zip(val, exp))
+
+            # loose numeric/string compare: try direct equality first, then str() compare
+            try:
+                if val == exp:
+                    return True
+            except Exception:
+                pass
+            try:
+                return str(val) == str(exp)
+            except Exception:
+                return False
+
+        return all(_match_val(obj.get(k), v) for k, v in expected.items())
+
+    def extract_json_objects_positions(self, text: str) -> List[Tuple[Dict[str, Any], int, int]]:
+        objs = []
+        for m in re.finditer(r'\{.*?\}', text, re.S):
+            start = m.start()
+            end = m.end()
+            j = m.group(0)
+            try:
+                obj = json.loads(j)
+                if isinstance(obj, dict):
+                    objs.append((obj, start, end))
+            except Exception:
+                continue
+        return objs
+
+    def contains_confirmation(self, text: str,
+                              expected_echo: Optional[str] = None,
+                              expected_json: Optional[Dict[str, Any]] = None) -> Optional[Tuple[Dict[str, Any], int]]:
+
+        # Helper json match (reuse your json_matches if present)
+        def _json_ok(obj, exp) -> bool:
+            if exp is None:
+                return obj.get("status") == "ok"
+            return self.json_matches(obj, exp)
+
+        # Case A: expected_echo specified -> find occurrences of that literal substring
+        if expected_echo is not None:
+            # find all literal occurrences (not regex) to be robust
+            start_pos = 0
+            esc = re.escape(expected_echo)
+            for m in re.finditer(esc, text):
+                # search for first JSON after this echo occurrence
+                search_start = m.end()
+                jm = re.search(r'\{.*?\}', text[search_start:], re.S)
+                if not jm:
+                    continue
+                json_text = jm.group(0)
+                json_abs_end = search_start + jm.end()
+                try:
+                    obj = json.loads(json_text)
+                except Exception:
+                    continue
+                if _json_ok(obj, expected_json):
+                    return obj, json_abs_end
+            return None
+
+        # Case B: expected_echo is None -> JSON-only scan
+        json_objs = self.extract_json_objects_positions(text)
+        if not json_objs:
+            return None
+        for obj, start, end in json_objs:
+            if _json_ok(obj, expected_json):
+                return obj, end
+        return None
+
+
+    def extract_json_objects_positions(self, text: str) -> List[Tuple[Dict[str, Any], int, int]]:
+        """返回文本中所有可解析 JSON 的三元组 (obj, start_index, end_index)。"""
+        objs: List[Tuple[Dict[str, Any], int, int]] = []
+        for m in re.finditer(r'\{.*?\}', text, re.S):
+            start = m.start()
+            end = m.end()
+            j = m.group(0)
+            try:
+                obj = json.loads(j)
+                if isinstance(obj, dict):
+                    objs.append((obj, start, end))
+            except Exception:
+                continue
+        return objs
+
+    def extract_echo_json_pairs_positions(self, text: str) -> List[Tuple[str, Dict[str, Any], int, int]]:
+        """
+        返回所有 (echo, json_obj, echo_start_index, json_end_index)
+        echo_start_index 以便需要时做更精确的截断或调试
+        """
+        pairs: List[Tuple[str, Dict[str, Any], int, int]] = []
+        for m in re.finditer(r'(^|\r?\n)\s*(tool\s+call[^\r\n]+)\s*(\r?\n|$)', text, re.I):
+            echo = m.group(2).strip()
+            echo_start = m.start(2)
+            search_start = m.end()
+            jm = re.search(r'\{.*?\}', text[search_start:], re.S)
+            if not jm:
+                continue
+            json_abs_start = search_start + jm.start()
+            json_abs_end = search_start + jm.end()
+            jtext = jm.group(0)
+            try:
+                obj = json.loads(jtext)
+            except Exception:
+                continue
+            pairs.append((echo, obj, echo_start, json_abs_end))
+        return pairs
+
+    def contains_confirmation2(self,
+                               text: str,
+                               expected_echo: Optional[str] = None,
+                               expected_status: Optional[str] = None,
+                               keys: Optional[List[str]] = None
+                               ) -> Optional[Tuple[Dict[str, Any], int]]:
+
+        def to_number(v) -> Optional[float]:
+            if v is None:
+                return None
+            if isinstance(v, bool):
+                return 1.0 if v else 0.0
+            if isinstance(v, (int, float)):
+                return float(v)
+            if isinstance(v, str):
+                s = v.strip()
+                # try direct float
+                try:
+                    return float(s)
+                except Exception:
+                    pass
+                # try extract first numeric substring
+                m = re.search(r'-?\d+(?:\.\d+)?', s)
+                if m:
+                    try:
+                        return float(m.group(0))
+                    except Exception:
+                        return None
+                return None
+            return None
+
+        def to_number_or_array(v):
+            # if list/tuple => convert each element
+            if isinstance(v, (list, tuple)):
+                nums = []
+                for e in v:
+                    ne = to_number(e)
+                    if ne is None:
+                        return None
+                    nums.append(ne)
+                return nums
+            # scalar
+            return to_number(v)
+
+        # helper to check status
+        def status_ok(obj):
+            if expected_status is None:
+                return True
+            s = obj.get("status")
+            if s is None:
+                return False
+            return str(s).lower() == str(expected_status).lower()
+
+        # Mode A: echo specified -> find occurrences and pair with next JSON
+        if expected_echo is not None:
+            esc = re.escape(expected_echo)
+            for m in re.finditer(esc, text):
+                search_start = m.end()
+                jm = re.search(r'\{.*?\}', text[search_start:], re.S)
+                if not jm:
+                    continue
+                json_text = jm.group(0)
+                json_end = search_start + jm.end()
+                try:
+                    obj = json.loads(json_text)
+                except Exception:
+                    continue
+                if not status_ok(obj):
+                    continue
+                # if no keys requested, return full obj
+                if not keys:
+                    return obj, json_end
+                result: Dict[str, Any] = {}
+                ok = True
+                for k in keys:
+                    if k not in obj:
+                        ok = False
+                        break
+                    val = to_number_or_array(obj.get(k))
+                    if val is None:
+                        ok = False
+                        break
+                    result[k] = val
+                if ok:
+                    return result, json_end
+            return None
+
+        # Mode B: JSON-only scan
+        json_objs = self.extract_json_objects_positions(text)
+        if not json_objs:
+            return None
+        for obj, start, end in json_objs:
+            if not status_ok(obj):
+                continue
+            if not keys:
+                return obj, end
+            result: Dict[str, Any] = {}
+            ok = True
+            for k in keys:
+                if k not in obj:
+                    ok = False
+                    break
+                val = to_number_or_array(obj.get(k))
+                if val is None:
+                    ok = False
+                    break
+                result[k] = val
+            if ok:
+                return result, end
+        return None
+
+    def parse_sequential_ext_pin_levels(self,
+                                        text: str,
+                                        pins: Optional[List[str]] = None,
+                                        command_keyword: str = "test_ext_pin",
+                                        expected_status: Optional[str] = "ok"
+                                        ) -> Optional[Tuple[List[int], int]]:
+        if pins is None:
+            pins = ["P0", "P1", "P2", "P3"]
+        cur = 0
+        levels: List[int] = []
+        # 宽松匹配每一条 echo（允许有前缀如 "x_card> "）
+        for pin in pins:
+            # 找到包含 command_keyword 且包含 pin=Px 的 echo 行（从 cur 开始）
+            pat = re.compile(r'(^|\r?\n)([^\r\n]*\btool\s+call\s+' + re.escape(command_keyword) +
+                             r'[^\r\n]*\bpin=' + re.escape(pin) + r'\b[^\r\n]*)', re.I)
+            m = pat.search(text, cur)
+            if not m:
+                return None
+            echo_end = m.end(2)
+            # 在 echo 之后寻找第一个完整 JSON
+            jm = re.search(r'\{.*?\}', text[echo_end:], re.S)
+            if not jm:
+                return None
+            json_text = jm.group(0)
+            json_end = echo_end + jm.end()
+            # 解析 JSON
+            try:
+                obj = json.loads(json_text)
+            except Exception:
+                return None
+            # 检查 status（如配置）
+            if expected_status is not None:
+                s = obj.get("status")
+                if s is None or str(s).lower() != str(expected_status).lower():
+                    return None
+            # 确认 JSON 中的 pin 与期望 pin 匹配（更稳健）
+            obj_pin = obj.get("pin")
+            if obj_pin is None or str(obj_pin).upper() != pin.upper():
+                return None
+            # 提取 level 并转为 int
+            lev = obj.get("level")
+            try:
+                level_int = int(lev)
+            except Exception:
+                try:
+                    level_int = int(float(str(lev).strip()))
+                except Exception:
+                    return None
+            levels.append(level_int)
+            # 下一次从当前 json 结束位置继续查找（保证顺序）
+            cur = json_end
+        # 全部找到
+        return levels, cur
+
+    def run(self):
+        self._check_timer = QTimer()
+        self._check_timer.timeout.connect(self._periodic_check)
+        self._check_timer.start(100)
+        self.exec_()
+        if self.isOpenPort:
+            self._close_serial()
+
+
+    def _periodic_check(self):
+        try:
+            self.signal_get_work_com.emit(self.work)
+        except Exception:
+            pass
+        if not self.isStart:
+            if self.isOpenPort:
+                print("isStart False，关闭端口")
+                self._close_serial()
+            return
+        if self.isStart and not self.isOpenPort:
+            if not self.port:
+                return
+            available = [p.portName() for p in QSerialPortInfo.availablePorts()]
+            if self.port in available:
+                self.open_serial_link()
+            else:
+                pass
+        else:
+            if self.isOpenPort and self.serial and self.serial.portName() != self.port:
+                self.signal_set_ui_page.emit(self.work,False, 2, "", "")
+                print("端口名称变化，重启串口")
+                self._close_serial()
+
+    def stop(self):
+        # 停止检查定时器
+        try:
+            if self._check_timer and self._check_timer.isActive():
+                self._check_timer.stop()
+        except Exception:
+            pass
+
+        # 停止写定时器（立即）
+        try:
+            self._stop_periodic_write()
+        except Exception:
+            pass
+
+        # 确保在串口所属线程中同步关闭串口（若已打开）
+        try:
+            if self.isOpenPort:
+                if QThread.currentThread() == self.thread():
+                    # 已经在本线程，直接关闭
+                    self._close_serial()
+                else:
+                    # 在其它线程（通常是主线程）调用，使用阻塞队列调用确保 _close_serial 在本线程执行完
+                    QMetaObject.invokeMethod(self, "_close_serial", Qt.BlockingQueuedConnection)
+        except Exception:
+            # 兜底
+            try:
+                self._close_serial()
+            except Exception:
+                pass
+
+        # 退出事件循环并等待线程结束（短等待）
+        try:
+            self.quit()
+            # 等待线程退出一段时间以让 deleteLater/清理完成
+            self.wait(500)  # 500 ms，可根据需要调整/移除
+        except Exception:
+            pass
+
+#############################################################################################################
+
+class BaseTest_Thread(QThread):
+    signal_get_work_com = pyqtSignal(int)
+    signal_set_ui_page = pyqtSignal(bool,int, str, str)
+    signal_com_refresh = pyqtSignal(str, bool)
+    signal_isPassOrNg =  pyqtSignal(bool)
+    signal_isRetest = pyqtSignal(bool)
+
+    def initVars(self):
+        self._recv_accum = ""
+        self.oldCurrentTestIndex = 0
+        self.currentTestIndex = 0
+        self._last_now = None
+
+        self.motor_p0_is_unlock = -1
+        self.motor_p0_state_0 = False
+        self.motor_p0_state_1 = False
+
+        self.motor_p1_is_unlock = -1
+        self.motor_p1_state_0 = False
+        self.motor_p1_state_1 = False
+
+        self.servo_p2_is_unlock = -1
+        self.servo_p2_state_0 = False
+        self.servo_p2_state_1 = False
+
+        self.servo_p3_is_unlock = -1
+        self.servo_p3_state_0 = False
+        self.servo_p3_state_1 = False
+
+
+        self.m_p0_on_num = 0
+        self.m_p0_off_num = 0
+        self.m_p1_on_num = 0
+        self.m_p1_off_num = 0
+
+        self.m_p2_on_num = 0
+        self.m_p2_off_num = 0
+        self.m_p3_on_num = 0
+        self.m_p3_off_num = 0
+
+        self.i2c_retry_count = 0
+        self.servo_retry_count = 0
+
+        self.servoTestNum = random.choice([4, 5, 6])
+        #self.servoTestNum = 6
+        self.servo_current_num = 0
+
+
+        self.motorTestNum = 5
+        self.motor_current_num = 0
+
+        self.base_powerNum = 5
+        self.base_power_current_num = 0
+
+
+        self.turn_state = False
+        self.test_rgb_result = False
+        self.test_lcd_result = False
+        self.test_btn_result = False
+        self.test_play_result = False
+        self.test_tf_result = False
+        self.test_adc_result = False
+        self.test_msg_result = False
+        self.test_wifi_result = False
+        self._waiting_base_rgb_cmd = False
+
+        self._sent_base_testing_cmd = False
+        self._finish_base_testing = False
+        self._waiting_base_testing_cmd = False
+
+        self.base_motor_1_state = False
+        self.base_motor_2_state = False
+        self._finish_base_motor = False
+
+        self._sent_btn_cmd = False
+        self._finish_btn = False
+        self._waiting_btn_cmd = False
+
+        self._sent_tf_cmd = False
+        self._finish_tf = False
+        self._waiting_tf_cmd = False
+
+        self._sent_play_cmd = False
+        self._finish_play = False
+        self._waiting_play_cmd = False
+
+        self._sent_adc_cmd = False
+        self._finish_adc = False
+        self._waiting_adc_cmd = False
+
+        self._sent_msg_cmd = False
+        self._finish_msg = False
+        self._waiting_msg_cmd = False
+
+        self._sent_wifi_cmd = False
+        self._finish_wifi = False
+        self._waiting_wifi_cmd = False
+        self._wifi_retry_num = 0
+
+        self._sent_gpio_cmd = False
+        self._finish_gpio = False
+        self._waiting_gpio_cmd = False
+
+        self._finish_base_power = False
+        self._sent_base_power_cmd = False
+        self._waiting_base_power_cmd = False
+
+        self._finish_base_servo = False
+        self._sent_base_servo_cmd = False
+        self._waiting_base_servo_cmd = False
+
+        self._sent_i2c_cmd = False
+        self._waiting_i2c_cmd = False
+        self._finish_i2c = False
+
+
+    def __init__(self,test_mode):
+        super(BaseTest_Thread, self).__init__()
+        self.port = ""
+        self.isStart = False
+        self.isOpenPort = False
+        self.serial = None
+        self._check_timer = None
+        self._write_timer = None
+        self.test_mode = test_mode
+        self.initVars()
+
+        self.cmd_rgb = "tool call test_rgb r=50 g=50 b=50"
+        self.cmd_motor_in = "tool call test_ext_pin pin=P0 mode=in\ntool call test_ext_pin pin=P1 mode=in\n"
+        self.cmd_servo_in = "tool call test_ext_pin pin=P2 mode=in\ntool call test_ext_pin pin=P3 mode=in\n"
+        self.cmd_base_rgb = "tool call control_ext_rgb module=base index=-1 r=50 g=50 b=50"
+        self.cmd_base_testing = "tool call test_power"
+
+
+        self.cmd_motor_foreward = "tool call control_ext_motor motor_num=1 speed=-80\ntool call control_ext_motor motor_num=2 speed=80\ntool call control_ext_motor motor_num=1 speed=-80\ntool call control_ext_motor motor_num=2 speed=80\n"
+        self.cmd_motor_reversal = "tool call control_ext_motor motor_num=1 speed=80\ntool call control_ext_motor motor_num=2 speed=-80\ntool call control_ext_motor motor_num=1 speed=80\ntool call control_ext_motor motor_num=2 speed=-80\n"
+        self.cmd_motor_stop = "tool call control_ext_motor motor_num=1 speed=0\ntool call control_ext_motor motor_num=2 speed=0"
+
+        self.cmd_servo_turn = "tool call control_ext_servo servo_num=1 angle=105.0\ntool call control_ext_servo servo_num=2 angle=110.0"
+        self.cmd_servo_stop = "tool call control_ext_servo servo_num=1 angle=0.0\ntool call control_ext_servo servo_num=2 angle=0.0"
+        self.cmd_base_power = "tool call control_base_power enable=true"
+        self.cmd_i2c = "i2c_scan"
+
+        self.signal_com_refresh.connect(self.set_work_code)
+        self.signal_isPassOrNg.connect(self.Is_Pass_Or_Ng)
+
+        self.signal_isRetest.connect(self.Is_Retest)
+
+
+    def set_work_code(self, com, isStart):
+        if com and com != self.port and self.isOpenPort:
+            try:
+                if QThread.currentThread() == self.thread():
+                    self._close_serial()
+                else:
+                    QMetaObject.invokeMethod(self, "_close_serial", Qt.BlockingQueuedConnection)
+            except Exception:
+                # 兜底：尝试直接关闭
+                try:
+                    self._close_serial()
+                except Exception:
+                    pass
+
+        # 更新端口与启动标志
+        self.port = com
+        self.isStart = isStart
+
+
+    def Is_Pass_Or_Ng(self, var):
+        if self.test_mode == 0 or self.test_mode == 1:
+            if self.currentTestIndex == 1:
+                if var:
+                    self.currentTestIndex += 1
+                else:
+                    self.signal_set_ui_page.emit(False, 1, "RGB灯异常", "")
+                    self.currentTestIndex = -1
+
+            if self.currentTestIndex == 2 and self._finish_base_motor:
+                if var:
+                    self.currentTestIndex += 1
+                else:
+                    self.signal_set_ui_page.emit(False, 1, "电机转动异常", "")
+                    self.currentTestIndex = -1
+
+
+    def Is_Retest(self, var):
+        self.signal_set_ui_page.emit(False, 2, "", "")
+        self.initVars()
+
+    def open_serial_link(self):
+        if not self.port:
+            print("open_serial_link: 未指定端口")
+            return False
+
+        available = [p.portName() for p in QSerialPortInfo.availablePorts()]
+        if self.port not in available:
+            print(f"open_serial_link: 请求的端口 {self.port} 不在可用端口列表: {available}")
+            return False
+
+        try:
+            if self.serial is not None:
+                self._close_serial()
+
+            self.serial = QSerialPort()
+            self.serial.setPortName(self.port)
+            self.serial.setBaudRate(115200)
+            self.serial.setDataBits(QSerialPort.Data8)
+            self.serial.setParity(QSerialPort.NoParity)
+            self.serial.setStopBits(QSerialPort.OneStop)
+            self.serial.setFlowControl(QSerialPort.NoFlowControl)
+
+            if self.serial.open(QIODevice.ReadWrite):
+                print(f"\n成功打开串口: {self.port}")
+                self.signal_set_ui_page.emit(False, 2, "", "")
+                try:
+                    self.serial.clear()
+                except Exception:
+                    pass
+                time.sleep(0.05)
+
+                try:
+                    self.serial.readyRead.connect(self.on_serial_read)
+                except Exception as e:
+                    print("readyRead connect 异常:", e)
+
+                # reset states
+                self.initVars()
+                self._recv_accum = ""
+                self.isOpenPort = True
+                QTimer.singleShot(2000, self._start_periodic_write)  # 延迟 2s 启动写定时器
+                return True
+            else:
+                print(f"\n打开串口失败: {self.port}")
+                self.isOpenPort = False
+                return False
+        except Exception as e:
+            print("open_serial_link 异常:", e)
+            self.isOpenPort = False
+            return False
+
+    def _close_serial(self):
+        # 1) 停写定时器，避免并发写
+        try:
+            self._stop_periodic_write()
+        except Exception:
+            pass
+
+        # 2) 标记端口已关闭，避免其它逻辑再尝试写
+        self.isOpenPort = False
+
+        if not self.serial:
+            return
+
+        try:
+            # 3) 断开信号
+            try:
+                self.serial.readyRead.disconnect(self.on_serial_read)
+            except Exception:
+                pass
+
+            # 4) 嘗試短等待 pending bytes 写入排空（可选，短超时）
+            try:
+                self.serial.waitForBytesWritten(200)  # 200 ms
+            except Exception:
+                pass
+
+            # 5) 清理缓冲
+            try:
+                self.serial.clear()
+            except Exception:
+                pass
+
+            # 6) 关闭端口
+            try:
+                self.serial.close()
+            except Exception:
+                pass
+
+            # 7) 释放引用（不要依赖 deleteLater 必须由事件循环处理）
+            try:
+                self.serial = None
+            except Exception:
+                self.serial = None
+
+        finally:
+            # 8) 重置状态标志（按需）
+            self._sent_rgb_cmd = False
+            self._waiting_rgb_cmd = False
+            self._last_now = 0.0
+            # ... 重置其它标志 ...
+            self._recv_accum = ""
+            self.isOpenPort = False
+
+    def _start_periodic_write(self):
+        if not self.isOpenPort or self.serial is None:
+            return
+        if self._write_timer is None:
+            self._write_timer = QTimer()
+            self._write_timer.timeout.connect(self._on_write_timer)
+            self._write_timer.start(100)
+
+    def _stop_periodic_write(self):
+        if self._write_timer is not None:
+            try:
+                if self._write_timer.isActive():
+                    self._write_timer.stop()
+            except Exception:
+                pass
+            try:
+                self._write_timer.timeout.disconnect(self._on_write_timer)
+            except Exception:
+                pass
+            self._write_timer = None
+            print("写入定时器已停止")
+
+    # 指令发送
+    def _on_write_timer(self):
+        if not self.isOpenPort or self.serial is None:
+            self._stop_periodic_write()
+            return
+
+        now = time.time()
+
+        if self.test_mode == 0:
+            if self.currentTestIndex == 0:
+                t_testPro = "测试项目" + str(self.currentTestIndex)
+                t_cmd = self.cmd_base_testing
+                if not self._finish_base_testing:
+                    self.signal_set_ui_page.emit(False, 2, "","")
+                    cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                    if (not self._waiting_base_testing_cmd) or (now - self._last_now > 1.0):
+                        try:
+                            bytes_written = self.serial.write(cmd_bytes)
+                            try:
+                                self.serial.waitForBytesWritten(200)
+                            except Exception:
+                                pass
+                            self._sent_base_testing_cmd = True
+                            self._waiting_base_testing_cmd = True
+                            self._last_now = now
+                            print(f"[发送] 底座检测 cmd={t_cmd} bytes={bytes_written}")
+                        except Exception:
+                            print(f"[发送失败] 底座检测 cmd={t_cmd}")
+                else:
+                    self.currentTestIndex += 1
+
+            if self.currentTestIndex == 1:
+                t_testPro = "测试项目" + str(self.currentTestIndex)
+                t_cmd = self.cmd_base_rgb
+                self.signal_set_ui_page.emit(True, 3, t_testPro, "\n << < 人工查看 >> >\n\n[RGB灯]\n\n\n是否点亮?")
+                cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                if (not self._waiting_base_rgb_cmd) or (now - self._last_now >= 2.0):
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(200)
+                        except Exception:
+                            pass
+                        self._waiting_base_rgb_cmd = True
+                        self._last_now = now
+                        print(f"[发送] 底座RGB cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] 底座RGB cmd={t_cmd}")
+
+            if self.currentTestIndex == 2:
+                if self.motor_current_num >= self.motorTestNum:
+                    self._finish_base_motor = True
+
+                t_testPro = "测试项目" + str(self.currentTestIndex)
+                if not self._finish_base_motor:
+                    if self.turn_state:
+                        t_cmd = self.cmd_motor_foreward
+                        self.signal_set_ui_page.emit(False, 3, t_testPro,f"\n\n\n\n[人工查看电机正转]\n[测试次数]:{self.motor_current_num}/{self.motorTestNum}\n[电机1]:是否正常转动?\n[电机2]:是否正常转动?")
+                        cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                        if (now - self._last_now >= 2):
+                            try:
+                                bytes_written = self.serial.write(cmd_bytes)
+                                try:
+                                    self.serial.waitForBytesWritten(100)
+                                    self.motor_current_num += 1
+                                except Exception:
+                                    pass
+
+                                self._last_now = now
+                                self.turn_state = not self.turn_state
+                                print(f"[发送] 电机正传 cmd={t_cmd} bytes={bytes_written}")
+
+                            except Exception:
+                                print(f"[发送失败] 电机正传 cmd={t_cmd}")
+                    else:
+                        t_cmd = self.cmd_motor_reversal
+                        self.signal_set_ui_page.emit(False, 3, t_testPro,f"\n\n\n\n[人工查看电机反转]\n[测试次数]:{self.motor_current_num}/{self.motorTestNum}\n[电机1]:是否正常转动?\n[电机2]:是否正常转动?")
+                        cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                        if (now - self._last_now >= 2):
+                            try:
+                                bytes_written = self.serial.write(cmd_bytes)
+                                try:
+                                    self.serial.waitForBytesWritten(100)
+                                    self.motor_current_num += 1
+                                except Exception:
+                                    pass
+
+                                self._last_now = now
+                                self.turn_state = not self.turn_state
+                                print(f"[发送] 电机反传 cmd={t_cmd} bytes={bytes_written}")
+
+                            except Exception:
+                                print(f"[发送失败] 电机反传 cmd={t_cmd}")
+                else:
+                    t_cmd = self.cmd_motor_stop
+                    cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        self.serial.waitForBytesWritten(1)
+                        print(f"[发送] 电机停止 cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] 电机停止 cmd={t_cmd}")
+                        pass
+                    self.signal_set_ui_page.emit(True, 3, t_testPro,"\n << < 人工评判 >> >\n\n[电机1]:是否正常转动?\n[电机2]:是否正常转动?")
+
+            if self.currentTestIndex == 3:
+                if not self._finish_base_power:
+                    t_testPro = "测试项目" + str(self.currentTestIndex)
+                    t_cmd = self.cmd_base_power
+                    self.signal_set_ui_page.emit(False, 3, t_testPro, "\n\n\n\n\n[金手指供电开启]\n")
+                    cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                    if (not self._waiting_base_power_cmd) or (now - self._last_now > 2.0):
+                        try:
+                            bytes_written = self.serial.write(cmd_bytes)
+                            try:
+                                self.serial.waitForBytesWritten(1000)
+                                self.base_power_current_num += 1
+                            except Exception:
+                                pass
+                            self._sent_base_power_cmd = True
+                            self._waiting_base_power_cmd = True
+                            self._last_now = now
+                            print(f"[发送] 金手指供电开启 cmd={t_cmd} bytes={bytes_written}")
+                        except Exception:
+                            print(f"[发送失败] 金手指供电开启 cmd={t_cmd}")
+                else:
+                    self.turn_state = False
+                    self.currentTestIndex += 1
+
+                if self.base_power_current_num >= self.base_powerNum:
+                    self.signal_set_ui_page.emit(False, 1, "金手指供电开启异常", "")
+                    self.currentTestIndex = -1
+
+            if self.currentTestIndex == 4:
+                if self.servo_current_num > self.servoTestNum:
+                    self._finish_base_servo = True
+
+                if not self._finish_base_servo:
+                    t_testPro = "测试项目" + str(self.currentTestIndex)
+                    if not self.turn_state:
+                        t_cmd = self.cmd_servo_turn
+                        #self.signal_set_ui_page.emit(False, 3, t_testPro,f"\n\n\n[舵机归位自检]\n[测试次数]:{self.servo_current_num}/{self.servoTestNum}\n[舵机1]: 转动[{self.servo_p2_state_0}], 归零[{self.servo_p2_state_1}]\n[舵机2]: 转动[{self.servo_p3_state_0}], 归零[{self.servo_p3_state_1}]")
+                        self.signal_set_ui_page.emit(False, 3, t_testPro,f"\n\n\n[舵机归位自检]\n[测试次数]:{self.servo_current_num}")
+
+                        cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                        if (now - self._last_now > 1.0):
+                            bytes_written = self.serial.write(cmd_bytes)
+                            try:
+                                self.serial.waitForBytesWritten(1000)
+                                self.servo_current_num += 1
+                                print(f"[发送] 舵机转动 cmd={t_cmd} bytes={bytes_written}")
+                            except Exception:
+                                print(f"[发送失败] 舵机转动 cmd={t_cmd}")
+
+                            self._last_now = now
+                            self.turn_state = not self.turn_state
+
+                    else:
+                        t_cmd = self.cmd_servo_stop
+                        #self.signal_set_ui_page.emit(False, 3, t_testPro,f"\n\n\n[舵机转动自检]\n[测试次数]:{self.servo_current_num}/{self.servoTestNum}\n[舵机1]: 转动[{self.servo_p2_state_0}], 归零[{self.servo_p2_state_1}]\n[舵机2]: 转动[{self.servo_p3_state_0}], 归零[{self.servo_p3_state_1}]")
+                        self.signal_set_ui_page.emit(False, 3, t_testPro,f"\n\n\n[舵机转动自检]\n[测试次数]:{self.servo_current_num}")
+                        cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                        if (now - self._last_now > 1.0):
+                            bytes_written = self.serial.write(cmd_bytes)
+                            try:
+                                self.serial.waitForBytesWritten(1000)
+                                self.servo_current_num += 1
+                                print(f"[发送] 舵机归位自检 cmd={t_cmd} bytes={bytes_written}")
+                            except Exception:
+                                print(f"[发送失败] 舵机归位自检 cmd={t_cmd}")
+                                pass
+
+                            self._last_now = now
+                            self.turn_state = not self.turn_state
+                else:
+                    self.currentTestIndex += 1
+
+
+            # if self.currentTestIndex == 5:
+            #     if not self._finish_i2c:
+            #         t_testPro = "测试项目" + str(self.currentTestIndex)
+            #         t_cmd = self.cmd_i2c
+            #         self.signal_set_ui_page.emit(False, 3, t_testPro, "\n\n\n\n\n[I2C自检]\n")
+            #         cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+            #         if (not self._waiting_i2c_cmd) or (now - self._last_now > 3.0):
+            #             try:
+            #                 bytes_written = self.serial.write(cmd_bytes)
+            #                 try:
+            #                     self.serial.waitForBytesWritten(500)
+            #                 except Exception:
+            #                     pass
+            #                 self._sent_i2c_cmd = True
+            #                 self._waiting_i2c_cmd = True
+            #                 self._last_now = now
+            #                 self.i2c_retry_count += 1
+            #                 print(f"[发送] I2C自检 cmd={t_cmd} bytes={bytes_written}")
+            #             except Exception:
+            #                 print(f"[发送失败] I2C自检 cmd={t_cmd}")
+            #     else:
+            #         self.currentTestIndex += 1
+            #     # if self.i2c_retry_count >= 5:
+            #     #     self.currentTestIndex = -1
+            #     #     self.signal_set_ui_page.emit(False, 1, "I2C异常\n", "")
+
+            if self.currentTestIndex == 5:
+                self.signal_set_ui_page.emit(False, 0, "测试通过", "")
+                t_cmd = self.cmd_base_testing
+                cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                if (now - self._last_now > 0.5):
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(200)
+                        except Exception:
+                            pass
+                        self._last_now = now
+                        print(f"[发送] 底座断开检测 cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] 底座断开检测 cmd={t_cmd}")
+        else:
+            if self.currentTestIndex == 0:
+                t_testPro = "测试项目" + str(self.currentTestIndex)
+                t_cmd = self.cmd_base_testing
+                if not self._finish_base_testing:
+                    self.signal_set_ui_page.emit(False, 2, "","")
+                    cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                    if (not self._waiting_base_testing_cmd) or (now - self._last_now > 1.0):
+                        try:
+                            bytes_written = self.serial.write(cmd_bytes)
+                            try:
+                                self.serial.waitForBytesWritten(200)
+                            except Exception:
+                                pass
+                            self._sent_base_testing_cmd = True
+                            self._waiting_base_testing_cmd = True
+                            self._last_now = now
+                            print(f"[发送] 底座检测 cmd={t_cmd} bytes={bytes_written}")
+                        except Exception:
+                            print(f"[发送失败] 底座检测 cmd={t_cmd}")
+                else:
+                    self.currentTestIndex += 1
+
+            if self.currentTestIndex == 1:
+                t_testPro = "测试项目" + str(self.currentTestIndex)
+                t_cmd = self.cmd_base_rgb
+                self.signal_set_ui_page.emit(True, 3, t_testPro, "\n << < 人工查看 >> >\n\n[RGB灯]\n\n\n是否点亮?")
+                cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                if (not self._waiting_base_rgb_cmd) or (now - self._last_now >= 2.0):
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(200)
+                        except Exception:
+                            pass
+                        self._waiting_base_rgb_cmd = True
+                        self._last_now = now
+                        print(f"[发送] 底座RGB cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] 底座RGB cmd={t_cmd}")
+
+            if self.currentTestIndex == 2:
+                if self.motor_current_num > self.motorTestNum:
+                    self._finish_base_motor = True
+
+                if not self._finish_base_motor:
+                    t_testPro = "测试项目" + str(self.currentTestIndex)
+                    if self.turn_state:
+                        t_cmd = self.cmd_motor_foreward
+                        self.signal_set_ui_page.emit(False, 3, t_testPro, f"\n\n\n\n\n[电机I2C自检]\n[测试次数]:{self.motor_current_num}/{self.motorTestNum}")
+                        cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                        if (now - self._last_now >= 1):
+                            try:
+                                bytes_written = self.serial.write(cmd_bytes)
+                                try:
+                                    self.serial.waitForBytesWritten(100)
+                                    self.motor_current_num += 1
+                                except Exception:
+                                    pass
+
+                                self._last_now = now
+                                self.turn_state = not self.turn_state
+                                print(f"[发送] 电机正传 cmd={t_cmd} bytes={bytes_written}")
+
+                            except Exception:
+                                print(f"[发送失败] 电机正传 cmd={t_cmd}")
+                    else:
+                        t_cmd = self.cmd_motor_reversal
+                        self.signal_set_ui_page.emit(False, 3, t_testPro,f"\n\n\n\n\n[电机I2C自检]\n[测试次数]:{self.motor_current_num}/{self.motorTestNum}")
+                        cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                        if (now - self._last_now >= 1):
+                            try:
+                                bytes_written = self.serial.write(cmd_bytes)
+                                try:
+                                    self.serial.waitForBytesWritten(100)
+                                    self.motor_current_num += 1
+                                except Exception:
+                                    pass
+
+                                self._last_now = now
+                                self.turn_state = not self.turn_state
+                                print(f"[发送] 电机反传 cmd={t_cmd} bytes={bytes_written}")
+
+                            except Exception:
+                                print(f"[发送失败] 电机反传 cmd={t_cmd}")
+                else:
+                    self.currentTestIndex += 1
+                    self._recv_accum = ""
+
+            if self.currentTestIndex == 3:
+                self.signal_set_ui_page.emit(False, 0, "测试通过", "")
+                t_cmd = self.cmd_base_testing
+                cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                if (now - self._last_now > 0.5):
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(200)
+                        except Exception:
+                            pass
+                        self._last_now = now
+                        print(f"[发送] 底座断开检测 cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] 底座断开检测 cmd={t_cmd}")
+
+
+
+    # 指令接收
+    def on_serial_read(self):
+        if not self.serial:
+            return
+        try:
+            qba = self.serial.readAll()
+            chunk = qba.data() if hasattr(qba, "data") else bytes(qba)
+        except Exception:
+            chunk = b''
+            print("serial.readAll() 读取异常")
+        if not chunk:
+            return
+        try:
+            recv_str = chunk.decode('utf-8', errors='replace')
+        except Exception:
+            recv_str = ''
+            print("recv data decode err")
+
+        self._recv_accum += recv_str
+        if len(self._recv_accum) > 8192:
+            self._recv_accum = self._recv_accum[-8192:]
+
+
+        # --------------------------------- 底座 ---------------------------------
+        if self.test_mode == 0:
+            # 底座检查
+            if self.currentTestIndex == 0:
+                if not self._finish_base_testing:
+                    expected_echo = self.cmd_base_testing
+                    expected_json = {"status": "ok","base_present":"true"}
+
+                    obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo, expected_json=expected_json)
+                    if obj is not None:
+                        self._finish_base_testing = True
+                        self._waiting_base_testing_cmd = False
+                        print(">>>>>>>>收到 底座检测 确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+            if self.currentTestIndex == 2:
+                if not self._finish_base_motor:
+                    expected_echo = None
+                    expected_json = {"status": "ok", "motor_num": "1"}
+
+                    obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo,
+                                                     expected_json=expected_json)
+                    if obj is not None:
+                        self.base_motor_1_state = True
+                        print(">>>>>>>>收到 底座电机1检测 确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+                    expected_json = {"status": "ok", "motor_num": "2"}
+
+                    obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo,expected_json=expected_json)
+                    if obj is not None:
+                        self.base_motor_2_state = True
+                        print(">>>>>>>>收到 底座电机2检测 确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+                    expected_json = {"status": "error", "reason": "driver_failed"}
+
+                    obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo,expected_json=expected_json)
+
+                    if obj is not None:
+                        self.currentTestIndex = -1
+                        self.signal_set_ui_page.emit(False, 1, "底座电机控制异常\n[请重烧固件再次尝试]", "")
+                        print(">>>>>>>>收到 电机输出异常 确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+
+            if self.currentTestIndex == 3:
+                if not self._finish_base_power:
+                    expected_echo = self.cmd_base_power
+                    expected_json = {"status":"ok","base_power":"true"}
+                    obj = self.contains_confirmation(self._recv_accum, expected_json=expected_json)
+                    if obj is not None:
+                        self._finish_base_power = True
+                        print(">>>>>>>>收到 金手指供电确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+            # if self.currentTestIndex == 4:
+            #     if not self._finish_base_servo:
+            #         if not self.servo_p2_state_1 or not self.servo_p2_state_0 or not self.servo_p3_state_1 or not self.servo_p3_state_0:
+            #             while True:
+            #                 parsed = self.pop_first_json_ok()
+            #                 if parsed is None:
+            #                     break
+            #
+            #                 pin = parsed.get("pin")
+            #                 level = parsed.get("level")
+            #
+            #                 if pin is not None:
+            #                     # GPIO引脚报文
+            #                     print(f"引脚反馈 pin={pin}, level={level}")
+            #                     if pin == "P2":
+            #
+            #                         if self.servo_p2_is_unlock == -1:
+            #                             self.servo_p2_is_unlock = level
+            #
+            #                         if self.servo_p2_is_unlock != level or self.servo_p2_is_unlock == -2:
+            #                             self.servo_p2_is_unlock = -2
+            #                             if level == 1:
+            #                                 self.servo_p2_state_1 = True
+            #                             if level == 0:
+            #                                 self.servo_p2_state_0 = True
+            #
+            #                     elif pin == "P3":
+            #                         if self.servo_p3_is_unlock == -1:
+            #                             self.servo_p3_is_unlock = level
+            #
+            #                         if self.servo_p3_is_unlock != level or self.servo_p3_is_unlock == -2:
+            #                             self.servo_p3_is_unlock = -2
+            #                             if level == 1:
+            #                                 self.servo_p3_state_1 = True
+            #                             if level == 0:
+            #                                 self.servo_p3_state_0 = True
+            #
+            #     if self.servo_p2_state_0 and self.servo_p2_state_1 and self.servo_p3_state_0 and self.servo_p3_state_1:
+            #         self._finish_base_servo = True
+            #     else:
+            #         if self.servo_current_num >= self.servoTestNum:
+            #             self.currentTestIndex = -1
+            #             str = "底座舵机引脚输出异常"
+            #             if not self.servo_p2_state_0 or not self.servo_p2_state_1:
+            #                 str += "\n[舵机1异常]"
+            #             if not self.servo_p3_state_0 or not self.servo_p3_state_1:
+            #                 str += "\n[舵机2异常]"
+            #             self.signal_set_ui_page.emit(False, 1, str, "")
+
+            if self.currentTestIndex == 5:
+                expected_echo = self.cmd_base_testing
+                expected_json = {"status": "ok","base_present":"false"}
+
+                obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo, expected_json=expected_json)
+                if obj is not None:
+                    self.initVars()
+                    print(">>>>>>>>收到 底座断开检测 确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+        else:
+            # 底座检查
+            if self.currentTestIndex == 0:
+                if not self._finish_base_testing:
+                    expected_echo = self.cmd_base_testing
+                    expected_json = {"status": "ok", "base_present": "true"}
+
+                    obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo,
+                                                     expected_json=expected_json)
+                    if obj is not None:
+                        self._finish_base_testing = True
+                        self._waiting_base_testing_cmd = False
+                        print(">>>>>>>>收到 底座检测 确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+            if self.currentTestIndex == 2:
+                if not self._finish_base_motor:
+                    expected_echo = None
+                    expected_json = {"status": "ok", "motor_num": "1"}
+
+                    obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo,
+                                                     expected_json=expected_json)
+                    if obj is not None:
+                        self.base_motor_1_state = True
+                        print(">>>>>>>>收到 底座电机1检测 确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+                    expected_json = {"status": "ok", "motor_num": "2"}
+
+                    obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo,
+                                                     expected_json=expected_json)
+                    if obj is not None:
+                        self.base_motor_2_state = True
+                        print(">>>>>>>>收到 底座电机2检测 确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+                    expected_json = {"status": "error", "reason": "driver_failed"}
+
+                    obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo,
+                                                     expected_json=expected_json)
+
+                    if obj is not None:
+                        self.currentTestIndex = -1
+                        self.signal_set_ui_page.emit(False, 1, "底座电机I2C异常\n", "")
+                        print(">>>>>>>>收到 电机输出异常 确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+                else:
+                    self.base_motor_start_test = True
+
+                if self.motor_current_num > self.motorTestNum:
+                    self._finish_base_motor = True
+
+
+            if self.currentTestIndex == 3:
+                expected_echo = self.cmd_base_testing
+                expected_json = {"status": "ok", "base_present": "false"}
+
+                obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo,
+                                                 expected_json=expected_json)
+                if obj is not None:
+                    self.initVars()
+                    print(">>>>>>>>收到 底座断开检测 确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+
+    # 提取 echo+json 配对（按回显后紧随的 JSON）
+    def extract_echo_json_pairs(self, text: str) -> List[Tuple[str, Dict[str, Any]]]:
+        pairs: List[Tuple[str, Dict[str, Any]]] = []
+        for m in re.finditer(r'(^|\r?\n)\s*(tool\s+call[^\r\n]+)\s*(\r?\n|$)', text, re.I):
+            echo = m.group(2).strip()
+            search_start = m.end()
+            jm = re.search(r'\{.*?\}', text[search_start:], re.S)
+            if not jm:
+                continue
+            jtext = jm.group(0)
+            try:
+                obj = json.loads(jtext)
+            except Exception:
+                continue
+            pairs.append((echo, obj))
+        return pairs
+
+    def json_matches(self, obj: Dict[str, Any], expected: Dict[str, Any]) -> bool:
+        def _match_val(val, exp) -> bool:
+            if callable(exp):
+                try:
+                    return bool(exp(val))
+                except Exception:
+                    return False
+            if isinstance(exp, dict):
+                if not isinstance(val, dict):
+                    return False
+                return all(_match_val(val.get(k), v) for k, v in exp.items())
+            if isinstance(exp, (list, tuple)):
+                if not isinstance(val, (list, tuple)) or len(val) != len(exp):
+                    return False
+                return all(_match_val(a, b) for a, b in zip(val, exp))
+            try:
+                return val == exp
+            except Exception:
+                return False
+        return all(_match_val(obj.get(k), v) for k, v in expected.items())
+
+
+    def extract_json_objects(self, text: str) -> List[Dict[str, Any]]:
+        """返回文本中能解析的所有 JSON 对象（按出现顺序）。"""
+        objs: List[Dict[str, Any]] = []
+        for m in re.finditer(r'\{.*?\}', text, re.S):
+            j = m.group(0)
+            try:
+                obj = json.loads(j)
+                if isinstance(obj, dict):
+                    objs.append(obj)
+            except Exception:
+                continue
+        return objs
+
+    def json_matches(self, obj: Dict[str, Any], expected: Dict[str, Any]) -> bool:
+        """
+        宽松匹配：expected 的值可以是常量、可调用或 'true'/'false' 字符串。
+        - 如果 expected 为 'true'/'false'（字符串），会接受 obj 中为 True/False 或 "true"/"false" 或 1/0。
+        - 数字/字符串会用 str() 比较（便于 "119" vs 119 的情况）。
+        - 嵌套 dict/list 会递归比较。
+        """
+
+        def _match_val(val, exp) -> bool:
+            # callable
+            if callable(exp):
+                try:
+                    return bool(exp(val))
+                except Exception:
+                    return False
+
+            # expected is 'true'/'false' string -> accept bool/str/int
+            if isinstance(exp, str) and exp.lower() in ("true", "false"):
+                exp_bool = (exp.lower() == "true")
+                if isinstance(val, bool):
+                    return val == exp_bool
+                if isinstance(val, str):
+                    return val.lower() == exp.lower()
+                if isinstance(val, (int, float)):
+                    # treat 0 as False, others as True
+                    return bool(val) == exp_bool
+                return False
+
+            # nested dict
+            if isinstance(exp, dict):
+                if not isinstance(val, dict):
+                    return False
+                return all(_match_val(val.get(k), v) for k, v in exp.items())
+
+            # list/tuple expected
+            if isinstance(exp, (list, tuple)):
+                if not isinstance(val, (list, tuple)) or len(val) != len(exp):
+                    return False
+                return all(_match_val(a, b) for a, b in zip(val, exp))
+
+            # loose numeric/string compare: try direct equality first, then str() compare
+            try:
+                if val == exp:
+                    return True
+            except Exception:
+                pass
+            try:
+                return str(val) == str(exp)
+            except Exception:
+                return False
+
+        return all(_match_val(obj.get(k), v) for k, v in expected.items())
+
+    def extract_json_objects_positions(self, text: str) -> List[Tuple[Dict[str, Any], int, int]]:
+        objs = []
+        for m in re.finditer(r'\{.*?\}', text, re.S):
+            start = m.start()
+            end = m.end()
+            j = m.group(0)
+            try:
+                obj = json.loads(j)
+                if isinstance(obj, dict):
+                    objs.append((obj, start, end))
+            except Exception:
+                continue
+        return objs
+
+    def contains_confirmation(self, text: str,
+                              expected_echo: Optional[str] = None,
+                              expected_json: Optional[Dict[str, Any]] = None) -> Optional[Tuple[Dict[str, Any], int]]:
+
+        # Helper json match (reuse your json_matches if present)
+        def _json_ok(obj, exp) -> bool:
+            if exp is None:
+                return obj.get("status") == "ok"
+            return self.json_matches(obj, exp)
+
+        # Case A: expected_echo specified -> find occurrences of that literal substring
+        if expected_echo is not None:
+            # find all literal occurrences (not regex) to be robust
+            start_pos = 0
+            esc = re.escape(expected_echo)
+            for m in re.finditer(esc, text):
+                # search for first JSON after this echo occurrence
+                search_start = m.end()
+                jm = re.search(r'\{.*?\}', text[search_start:], re.S)
+                if not jm:
+                    continue
+                json_text = jm.group(0)
+                json_abs_end = search_start + jm.end()
+                try:
+                    obj = json.loads(json_text)
+                except Exception:
+                    continue
+                if _json_ok(obj, expected_json):
+                    return obj, json_abs_end
+            return None
+
+        # Case B: expected_echo is None -> JSON-only scan
+        json_objs = self.extract_json_objects_positions(text)
+        if not json_objs:
+            return None
+        for obj, start, end in json_objs:
+            if _json_ok(obj, expected_json):
+                return obj, end
+        return None
+
+
+    def extract_json_objects_positions(self, text: str) -> List[Tuple[Dict[str, Any], int, int]]:
+        """返回文本中所有可解析 JSON 的三元组 (obj, start_index, end_index)。"""
+        objs: List[Tuple[Dict[str, Any], int, int]] = []
+        for m in re.finditer(r'\{.*?\}', text, re.S):
+            start = m.start()
+            end = m.end()
+            j = m.group(0)
+            try:
+                obj = json.loads(j)
+                if isinstance(obj, dict):
+                    objs.append((obj, start, end))
+            except Exception:
+                continue
+        return objs
+
+    def extract_echo_json_pairs_positions(self, text: str) -> List[Tuple[str, Dict[str, Any], int, int]]:
+        """
+        返回所有 (echo, json_obj, echo_start_index, json_end_index)
+        echo_start_index 以便需要时做更精确的截断或调试
+        """
+        pairs: List[Tuple[str, Dict[str, Any], int, int]] = []
+        for m in re.finditer(r'(^|\r?\n)\s*(tool\s+call[^\r\n]+)\s*(\r?\n|$)', text, re.I):
+            echo = m.group(2).strip()
+            echo_start = m.start(2)
+            search_start = m.end()
+            jm = re.search(r'\{.*?\}', text[search_start:], re.S)
+            if not jm:
+                continue
+            json_abs_start = search_start + jm.start()
+            json_abs_end = search_start + jm.end()
+            jtext = jm.group(0)
+            try:
+                obj = json.loads(jtext)
+            except Exception:
+                continue
+            pairs.append((echo, obj, echo_start, json_abs_end))
+        return pairs
+
+    def contains_confirmation2(self,
+                               text: str,
+                               expected_echo: Optional[str] = None,
+                               expected_status: Optional[str] = None,
+                               keys: Optional[List[str]] = None
+                               ) -> Optional[Tuple[Dict[str, Any], int]]:
+
+        def to_number(v) -> Optional[float]:
+            if v is None:
+                return None
+            if isinstance(v, bool):
+                return 1.0 if v else 0.0
+            if isinstance(v, (int, float)):
+                return float(v)
+            if isinstance(v, str):
+                s = v.strip()
+                # try direct float
+                try:
+                    return float(s)
+                except Exception:
+                    pass
+                # try extract first numeric substring
+                m = re.search(r'-?\d+(?:\.\d+)?', s)
+                if m:
+                    try:
+                        return float(m.group(0))
+                    except Exception:
+                        return None
+                return None
+            return None
+
+        def to_number_or_array(v):
+            # if list/tuple => convert each element
+            if isinstance(v, (list, tuple)):
+                nums = []
+                for e in v:
+                    ne = to_number(e)
+                    if ne is None:
+                        return None
+                    nums.append(ne)
+                return nums
+            # scalar
+            return to_number(v)
+
+        # helper to check status
+        def status_ok(obj):
+            if expected_status is None:
+                return True
+            s = obj.get("status")
+            if s is None:
+                return False
+            return str(s).lower() == str(expected_status).lower()
+
+        # Mode A: echo specified -> find occurrences and pair with next JSON
+        if expected_echo is not None:
+            esc = re.escape(expected_echo)
+            for m in re.finditer(esc, text):
+                search_start = m.end()
+                jm = re.search(r'\{.*?\}', text[search_start:], re.S)
+                if not jm:
+                    continue
+                json_text = jm.group(0)
+                json_end = search_start + jm.end()
+                try:
+                    obj = json.loads(json_text)
+                except Exception:
+                    continue
+                if not status_ok(obj):
+                    continue
+                # if no keys requested, return full obj
+                if not keys:
+                    return obj, json_end
+                result: Dict[str, Any] = {}
+                ok = True
+                for k in keys:
+                    if k not in obj:
+                        ok = False
+                        break
+                    val = to_number_or_array(obj.get(k))
+                    if val is None:
+                        ok = False
+                        break
+                    result[k] = val
+                if ok:
+                    return result, json_end
+            return None
+
+        # Mode B: JSON-only scan
+        json_objs = self.extract_json_objects_positions(text)
+        if not json_objs:
+            return None
+        for obj, start, end in json_objs:
+            if not status_ok(obj):
+                continue
+            if not keys:
+                return obj, end
+            result: Dict[str, Any] = {}
+            ok = True
+            for k in keys:
+                if k not in obj:
+                    ok = False
+                    break
+                val = to_number_or_array(obj.get(k))
+                if val is None:
+                    ok = False
+                    break
+                result[k] = val
+            if ok:
+                return result, end
+        return None
+
+
+    def pop_first_json_ok(self):
+        """
+        从self._recv_accum取出第一条完整 {"status":"ok",...} json
+        成功：返回 parsed_dict，并且自动把该段json从_recv_accum删掉
+        失败：返回 None，缓冲区不变
+        """
+        buf = self._recv_accum
+        # 找第一个 {
+        start = buf.find("{")
+        if start == -1:
+            return None
+
+        # 找成对的 }，支持json内部嵌套
+        brace_cnt = 0
+        end_pos = -1
+        for idx, c in enumerate(buf[start:]):
+            if c == "{":
+                brace_cnt += 1
+            elif c == "}":
+                brace_cnt -= 1
+                if brace_cnt == 0:
+                    end_pos = start + idx
+                    break
+        if end_pos == -1:
+            # 半包，没有闭合，不修改缓冲区
+            return None
+
+        json_slice = buf[start: end_pos + 1]
+        try:
+            data = json.loads(json_slice)
+        except json.JSONDecodeError:
+            # json解析失败，把这个{丢掉，截断到end_pos+1，防止死循环
+            self._recv_accum = buf[end_pos + 1:]
+            return None
+
+        # 判断status必须是 ok
+        if data.get("status") != "ok":
+            # 不是status=ok的json，丢弃这段，继续往后
+            self._recv_accum = buf[end_pos + 1:]
+            return None
+
+        # ✅匹配成功，原地裁剪缓冲区，删掉已经处理的这一段
+        self._recv_accum = buf[end_pos + 1:]
+        return data
+    def parse_sequential_ext_pin_levels(self,
+                                        text: str,
+                                        pins: Optional[List[str]] = None,
+                                        command_keyword: str = "test_ext_pin",
+                                        expected_status: Optional[str] = "ok"
+                                        ) -> Optional[Tuple[List[int], int]]:
+        if pins is None:
+            pins = ["P0", "P1", "P2", "P3"]
+        cur = 0
+        levels: List[int] = []
+        # 宽松匹配每一条 echo（允许有前缀如 "x_card> "）
+        for pin in pins:
+            # 找到包含 command_keyword 且包含 pin=Px 的 echo 行（从 cur 开始）
+            pat = re.compile(r'(^|\r?\n)([^\r\n]*\btool\s+call\s+' + re.escape(command_keyword) +
+                             r'[^\r\n]*\bpin=' + re.escape(pin) + r'\b[^\r\n]*)', re.I)
+            m = pat.search(text, cur)
+            if not m:
+                return None
+            echo_end = m.end(2)
+            # 在 echo 之后寻找第一个完整 JSON
+            jm = re.search(r'\{.*?\}', text[echo_end:], re.S)
+            if not jm:
+                return None
+            json_text = jm.group(0)
+            json_end = echo_end + jm.end()
+            # 解析 JSON
+            try:
+                obj = json.loads(json_text)
+            except Exception:
+                return None
+            # 检查 status（如配置）
+            if expected_status is not None:
+                s = obj.get("status")
+                if s is None or str(s).lower() != str(expected_status).lower():
+                    return None
+            # 确认 JSON 中的 pin 与期望 pin 匹配（更稳健）
+            obj_pin = obj.get("pin")
+            if obj_pin is None or str(obj_pin).upper() != pin.upper():
+                return None
+            # 提取 level 并转为 int
+            lev = obj.get("level")
+            try:
+                level_int = int(lev)
+            except Exception:
+                try:
+                    level_int = int(float(str(lev).strip()))
+                except Exception:
+                    return None
+            levels.append(level_int)
+            # 下一次从当前 json 结束位置继续查找（保证顺序）
+            cur = json_end
+        # 全部找到
+        return levels, cur
+
+    def run(self):
+        self._check_timer = QTimer()
+        self._check_timer.timeout.connect(self._periodic_check)
+        self._check_timer.start(100)
+        self.exec_()
+        if self.isOpenPort:
+            self._close_serial()
+
+
+    def _periodic_check(self):
+        try:
+            self.signal_get_work_com.emit(1)
+        except Exception:
+            pass
+        if not self.isStart:
+            if self.isOpenPort:
+                print("isStart False，关闭端口")
+                self._close_serial()
+            return
+        if self.isStart and not self.isOpenPort:
+            if not self.port:
+                return
+            available = [p.portName() for p in QSerialPortInfo.availablePorts()]
+            if self.port in available:
+                self.open_serial_link()
+            else:
+                pass
+        else:
+            if self.isOpenPort and self.serial and self.serial.portName() != self.port:
+                self.signal_set_ui_page.emit(False, 2, "", "")
+                print("端口名称变化，重启串口")
+                self._close_serial()
+
+    def stop(self):
+        # 停止检查定时器
+        try:
+            if self._check_timer and self._check_timer.isActive():
+                self._check_timer.stop()
+        except Exception:
+            pass
+
+        # 停止写定时器（立即）
+        try:
+            self._stop_periodic_write()
+        except Exception:
+            pass
+
+        # 确保在串口所属线程中同步关闭串口（若已打开）
+        try:
+            if self.isOpenPort:
+                if QThread.currentThread() == self.thread():
+                    # 已经在本线程，直接关闭
+                    self._close_serial()
+                else:
+                    # 在其它线程（通常是主线程）调用，使用阻塞队列调用确保 _close_serial 在本线程执行完
+                    QMetaObject.invokeMethod(self, "_close_serial", Qt.BlockingQueuedConnection)
+        except Exception:
+            # 兜底
+            try:
+                self._close_serial()
+            except Exception:
+                pass
+
+        # 退出事件循环并等待线程结束（短等待）
+        try:
+            self.quit()
+            # 等待线程退出一段时间以让 deleteLater/清理完成
+            self.wait(500)  # 500 ms，可根据需要调整/移除
+        except Exception:
+            pass
+
+
+class FinalTest_Thread(QThread):
+    signal_get_work_com = pyqtSignal(int)
+    signal_set_ui_page = pyqtSignal(int,bool,int, str, str)
+    signal_com_refresh = pyqtSignal(str, bool)
+    signal_isPassOrNg =  pyqtSignal(bool)
+
+    class TestType(Enum):
+        null = 0
+        base_testing = 1
+        audio = 2
+        rgb = 3
+        lcd = 4
+        btn = 5
+        tf = 6
+        finish = 7
+
+
+    def __init__(self,work):
+        super(FinalTest_Thread, self).__init__()
+        self._recv_accum = ""           # 累积接收文本，处理分片
+        self.port = ""
+        self.isStart = False
+        self.isOpenPort = False
+        self.serial = None
+        self._check_timer = None
+        self._write_timer = None
+        self.work = work
+        self.initVars()
+
+        self.cmd_rgb = "tool call test_rgb r=50 g=50 b=50"
+        self.cmd_lcd_rgb = "tool call test_lcd_loop enable=true"
+        self.cmd_btn = "tool call test_buttons timeout_ms=1000"
+        self.cmd_tf = "tool call test_tf"
+        self.cmd_play = "tool call test_audio action=play"
+        self.cmd_adc = "tool call test_sound_adc duration_ms=1000"
+        self.cmd_msg = "tool call test_sensors"
+        self.cmd_base_testing = "tool call test_power"
+        self.cmd_audio = "tool call test_audio action=echo"
+        self.cmd_read_mac = "tool call read_mac"
+
+
+        self.signal_com_refresh.connect(self.set_work_code)
+        self.signal_isPassOrNg.connect(self.Is_Pass_Or_Ng)
+
+    def getServoAngle(self,station_num: int):
+        # 拼接文件路径：当前目录/config/ServoAngle.ini
+        ini_path = os.path.join(os.getcwd(), "config", "ServoAngle.ini")
+        cfg = configparser.ConfigParser()
+
+        # 判断文件是否存在
+        if not os.path.exists(ini_path):
+            QMessageBox.critical(None, "配置错误", f"配置文件不存在：\n{ini_path}")
+            return None, None
+
+        # 读取ini
+        try:
+            cfg.read(ini_path, encoding="utf-8")
+        except Exception as e:
+            QMessageBox.critical(None, "读取失败", f"读取ServoAngle.ini出错：{str(e)}")
+            return None, None
+
+        sec_name = str(station_num)
+        # 判断工位section是否存在
+        if sec_name not in cfg.sections():
+            QMessageBox.warning(None, "工位不存在", f"无工位{station_num}配置")
+            return None, None
+
+        try:
+            top_val = float(cfg.get(sec_name, "top"))
+            down_val = float(cfg.get(sec_name, "down"))
+            return top_val, down_val
+        except Exception as e:
+            QMessageBox.critical(None, "参数解析错误", f"工位{station_num}参数读取失败：{str(e)}")
+            return None, None
+
+    def getWifiConfig(self):
+        """
+        读取INI中 [wifi] 节点的ssid、password
+        :return: (ssid, password) 读取失败返回 (None, None)
+        """
+        ini_path = os.path.join(os.getcwd(), "config", "ServoAngle.ini")
+        cfg = configparser.ConfigParser()
+
+        # 文件存在校验
+        if not os.path.exists(ini_path):
+            QMessageBox.critical(None, "配置错误", f"wifi配置文件不存在：\n{ini_path}")
+            return None, None
+
+        # 加载ini
+        try:
+            cfg.read(ini_path, encoding="utf-8")
+        except Exception as e:
+            QMessageBox.critical(None, "读取失败", f"读取配置文件异常：{str(e)}")
+            return None, None
+
+        # 校验[wifi]区块
+        wifi_section = "wifi"
+        if wifi_section not in cfg.sections():
+            QMessageBox.warning(None, "配置缺失", "INI文件内无 [wifi] 配置区块")
+            return None, None
+
+        try:
+            ssid = cfg.get(wifi_section, "ssid").strip()
+            password = cfg.get(wifi_section, "password").strip()
+            return ssid, password
+        except Exception as e:
+            QMessageBox.critical(None, "参数缺失", f"wifi ssid/password读取失败：{str(e)}")
+            return None, None
+
+    def initVars(self):
+        self._recv_accum = ""
+        self.mac = ""
+        self.sn = ""
+        self.oldSn = ""
+        self.code = ""
+        self.isUpdata = False
+        self.oldCurrentTestIndex = 0
+        self.currentTestIndex = self.TestType.base_testing.value
+        self._last_now = None
+        self.turn_state = False
+        self.currentMsgNum = 0
+
+        self.testNum = random.choice([2, 3, 4])
+        self.rssi = 0
+        self.servoCount = 0
+        self.servoCount = 0
+        self.m_p0_on_num = 0
+        self.m_p0_off_num = 0
+        self.m_p1_on_num = 0
+        self.m_p1_off_num = 0
+
+        self.battery_percent = 0
+        self._sent_battery_test_cmd = False
+        self._finish_battery_test = False
+        self._waiting_battery_test_cmd = False
+
+        self.m_p2_on_num = 0
+        self.m_p2_off_num = 0
+        self.m_p3_on_num = 0
+        self.m_p3_off_num = 0
+
+        self.light = 0.00
+        self.accel = 0.00
+        self.gyro  = 0.00
+        self.mag   = 0.00
+
+        self.test_rgb_result = False
+        self.test_lcd_result = False
+        self.test_btn_result = False
+        self.test_play_result = False
+        self.test_tf_result = False
+        self.test_adc_result = False
+        self.test_msg_result = False
+        self.test_wifi_result = False
+        self.test_gpio_result = False
+
+        self._finish_audio = False
+        self._sent_audio_cmd = False
+        self._waiting_audio_cmd = False
+
+        self._sent_rgb_cmd = False
+        self._finish_rgb = False
+        self._waiting_rgb_cmd = False
+
+        self._sent_lcd_cmd = False
+        self._finish_lcd = False
+        self._waiting_lcd_cmd = False
+
+        self._sent_btn_cmd = False
+        self._finish_btn = False
+        self._waiting_btn_cmd = False
+
+        self.confirm_pressed = False
+        self.return_pressed = False
+        self.select_pressed = False
+
+        self._sent_tf_cmd = False
+        self._finish_tf = False
+        self._waiting_tf_cmd = False
+
+        self._sent_play_cmd = False
+        self._finish_play = False
+        self._waiting_play_cmd = False
+
+        self._sent_adc_cmd = False
+        self._finish_adc = False
+        self._waiting_adc_cmd = False
+
+        self._sent_msg_cmd = False
+        self._finish_msg = False
+        self._waiting_msg_cmd = False
+
+        self._sent_wifi_cmd = False
+        self._finish_wifi = False
+        self._waiting_wifi_cmd = False
+        self._wifi_retry_num = 0
+
+        self._msg_retry_num = 0
+        self._msg_Through_num = 0
+
+        self._sent_gpio_cmd = False
+        self._finish_gpio = False
+        self._waiting_gpio_cmd = False
+
+        self._finish_mp3 = False
+        self._sent_mp3_cmd = False
+        self._waiting_mp3_cmd = False
+
+        self._finish_base_power = False
+        self._sent_base_power_cmd = False
+        self._waiting_base_power_cmd = False
+
+        self._finish_base_servo = False
+        self._sent_base_servo_cmd = False
+        self._waiting_base_servo_cmd = False
+
+
+        self._finish_read_mac = False
+        self._sent_read_mac_cmd = False
+        self._waiting_read_mac_cmd = False
+
+        self.is_finish_write_sn_code = False
+        self.write_sn_code = False
+
+        self._waiting_write_sn_cmd = False
+        self._waiting_write_code_cmd = False
+
+    def find_mac(self, mac: str):
+        global g_db_connection, g_MesTableName
+
+        # 预先清空旧 SN，避免残留
+        self.oldSn = None
+
+        if not isinstance(mac, str) or not mac.strip():
+            return False
+
+        normalized_mac = mac.strip().upper()
+
+        # 获取现有连接（不尝试重连）
+        connection = g_db_connection if (
+                g_db_connection is not None and hasattr(g_db_connection, 'open') and g_db_connection.open) else None
+        if connection is None:
+            return False
+
+        try:
+            sql = "SELECT sn FROM `{}` WHERE UPPER(mac) = %s LIMIT 1".format(g_MesTableName)
+            with connection.cursor() as cursor:
+                cursor.execute(sql, (normalized_mac,))
+                row = cursor.fetchone()
+                if not row:
+                    return False
+
+                # 兼容不同 cursor 返回类型
+                if isinstance(row, (list, tuple)) and len(row) > 0:
+                    sn = row[0]
+                elif isinstance(row, dict):
+                    sn = row.get('sn') if 'sn' in row else (next(iter(row.values())) if row else None)
+                else:
+                    sn = row
+
+                if sn is None:
+                    return False
+
+                # 确保是字符串
+                if isinstance(sn, bytes):
+                    try:
+                        sn = sn.decode('utf-8')
+                    except Exception:
+                        sn = str(sn)
+
+                self.oldSn = str(sn)
+                return True
+
+        except pymysql.MySQLError:
+            return False
+        except Exception:
+            return False
+
+    def uploading(self,info):
+        global g_db_connection,g_MesTableName
+
+        # 获取现有连接（不尝试重新连接）
+        connection = g_db_connection if (g_db_connection is not None and hasattr(g_db_connection, 'open') and g_db_connection.open) else None
+        if connection is None:
+            return False
+
+        self.isUpdata = self.find_mac(self.mac)
+
+        try:
+            if not self.isUpdata:
+                print("\nmac = :", self.mac)
+                print("\nsn = :", self.sn)
+                print("\nrandom_code = :", self.code)
+
+                if not self.code:
+                    print("\n密钥生成失败")
+                    return False
+
+                with connection.cursor() as cursor:
+                    # 开始事务
+                    connection.begin()
+
+                    # 插入新记录
+                    insert_sql = "INSERT INTO `" + g_MesTableName + "` (mac, sn, code,info, time) VALUES (%s, %s, %s, %s,NOW())"
+                    cursor.execute(insert_sql, (self.mac, self.sn ,self.code, info))
+
+                    # 提交事务
+                    connection.commit()
+                    return True
+            else:
+                with connection.cursor() as cursor:
+                    # 开始事务
+                    connection.begin()
+
+                    # 根据MAC地址更新内容,但是不更新新记录
+                    update_sql = "UPDATE `{}` SET info = %s, time = NOW() WHERE UPPER(mac) = %s".format(g_MesTableName)
+                    cursor.execute(update_sql, (info, self.mac))
+
+
+                    # 提交事务
+                    connection.commit()
+                    return True
+
+        except pymysql.MySQLError as e:
+            if connection:
+                connection.rollback()
+            return False
+        except Exception as e:
+            if connection:
+                connection.rollback()
+            return False
+
+    def create_random_code(self,sn: str, mac: str) -> Tuple[bytes, Dict[str, str]]:
+        normalized_sn = sn.strip()
+        normalized_mac = mac.strip().upper()
+        MAC_PATTERN = re.compile(r"^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$")
+        if not normalized_sn:
+            raise ValueError("SN不能为空")
+        if not MAC_PATTERN.fullmatch(normalized_mac):
+            raise ValueError("MAC必须使用 AA:BB:CC:DD:EE:FF 格式")
+        device_secret_raw = secrets.token_bytes(32)
+        return str(device_secret_raw.hex())
+
+    def find_first_missing_sn_serial(self, prefix: str, color: str, expected_count: Optional[int] = None):
+        global g_db_connection, g_MesTableName
+
+        if not prefix or not isinstance(prefix, str):
+            return False, "prefix 参数无效"
+        if not color or not isinstance(color, str) or len(color) != 1:
+            return False, "color 参数无效"
+
+        conn = g_db_connection if (g_db_connection is not None and getattr(g_db_connection, 'open', True)) else None
+        if conn is None:
+            return False, "MES未连接, 无法查询"
+
+        try:
+            # SQL: 从 SN 中截取流水号的开始位置（MySQL SUBSTRING 从1开始）
+            pos = len(prefix) + 1
+            like_pattern = prefix + "______" + color  # '_' 匹配单字符，6个下划线匹配 6 位流水号
+
+            # 提取流水号为整数，忽略不能转换的行
+            sql = f"SELECT CAST(SUBSTRING(`sn`, %s, 6) AS UNSIGNED) AS serial FROM `{g_MesTableName}` WHERE `sn` LIKE %s"
+            with conn.cursor() as cur:
+                cur.execute(sql, (pos, like_pattern))
+                rows = cur.fetchall()
+
+            serial_list = []
+            for row in rows:
+                # 兼容不同 cursor：可能是 (serial,) 也可能是 {'serial': val}
+                if isinstance(row, (list, tuple)) and len(row) > 0:
+                    val = row[0]
+                elif isinstance(row, dict):
+                    # 字典形式的 cursor（DictCursor）
+                    val = row.get('serial') or list(row.values())[0] if row else None
+                else:
+                    val = row
+                try:
+                    if val is None:
+                        continue
+                    ival = int(val)
+                    if 1 <= ival <= 999999:
+                        serial_list.append(ival)
+                except Exception:
+                    continue
+
+            if not serial_list:
+                # 没有符合记录，返回第一个流水号
+                return True, f"{1:06d}"
+
+            serial_set = set(serial_list)
+            # N: 要检查的区间上限（按你的规则：如果没有传 expected_count 用记录数 len(serial_list)）
+            N = expected_count if (expected_count is not None and expected_count > 0) else len(serial_list)
+
+            # 在 1..N 内查缺号
+            for i in range(1, N + 1):
+                if i not in serial_set:
+                    return True, f"{i:06d}"
+
+            # 如果 1..N 都存在，则返回 N+1
+            next_one = N + 1
+            if next_one > 999999:
+                return False, "流水号已达到上限 999999"
+            return True, f"{next_one:06d}"
+
+        except pymysql.MySQLError as e:
+            return False, f"数据库错误: {e}"
+        except Exception as e:
+            return False, f"执行错误: {e}"
+
+    def create_sn(self,serial: int,
+                  product_type: str = "13",
+                  product_name: str = "48",
+                  version: str = "A",
+                  reserved: str = "00",
+                  check: str = "A",
+                  color: str = "W",
+                  prod_date: Optional[datetime.date] = None
+                  ) -> str:
+
+        # 验证 serial
+        if not isinstance(serial, int) or serial < 0 or serial > 999999:
+            raise ValueError("流水号必须是 0 到 999999 之间的整数（含边界）")
+
+        # 简单长度验证
+        if len(product_type) != 2 or len(product_name) != 2 or len(version) != 1 or len(reserved) != 2:
+            raise ValueError("产品类型/产品名称/版本/预留长度无效")
+        if len(check) != 1 or len(color) != 1:
+            raise ValueError("校验位和产品颜色必须为单个字符")
+
+        # 生产日期（默认今天）
+        if prod_date is None:
+            prod_date = datetime.date.today()
+
+        iso_year, iso_week, _ = prod_date.isocalendar()
+        year_part = f"{(iso_year % 100):02d}"
+        week_part = f"{iso_week:02d}"
+        serial_part = f"{serial:06d}"
+
+        sn = f"{product_type}{product_name}{version}{reserved}{year_part}{week_part}{check}{serial_part}{color}"
+        return sn
+
+    def get_next_sn_and_generate(self):
+        # 产品默认参数（与 create_sn 默认一致）
+        product_type = "13"
+        product_name = "48"
+        version = "A"
+        reserved = "00"
+        check = "A"
+        color = "W"
+
+        # 生产日期 = 今天
+        prod_date = datetime.date.today()
+        iso_year, iso_week, _ = prod_date.isocalendar()
+        year_part = f"{(iso_year % 100):02d}"
+        week_part = f"{iso_week:02d}"
+
+        # prefix 应与 find_first_missing_sn_serial 的期待一致：
+        # product_type + product_name + version + reserved + year(2) + week(2) + check
+        prefix = f"{product_type}{product_name}{version}{reserved}{year_part}{week_part}{check}"
+
+        # 从 DB 查找第一个缺号或下一个流水（返回 6 位字符串，如 "000003"）
+        ok, serial_or_err = self.find_first_missing_sn_serial(prefix=prefix, color=color, expected_count=None)
+        if not ok:
+            return False, serial_or_err
+
+        # serial_or_err 应为类似 "000003" 的字符串，转为 int 传给 create_sn
+        try:
+            serial_int = int(serial_or_err)
+            return True,serial_int
+        except Exception as e:
+            return False, f"解析流水号失败: {e}"
+
+
+    def set_work_code(self, com, isStart):
+        if com and com != self.port and self.isOpenPort:
+            try:
+                if QThread.currentThread() == self.thread():
+                    self._close_serial()
+                else:
+                    QMetaObject.invokeMethod(self, "_close_serial", Qt.BlockingQueuedConnection)
+            except Exception:
+                # 兜底：尝试直接关闭
+                try:
+                    self._close_serial()
+                except Exception:
+                    pass
+
+        # 更新端口与启动标志
+        self.port = com
+        self.isStart = isStart
+
+
+    def Is_Pass_Or_Ng(self, var,test = ""):
+        if self.currentTestIndex == self.TestType.rgb.value and self._finish_rgb:
+            if var:
+                self.currentTestIndex += 1
+                self.test_rgb_result = True
+            else:
+                self.signal_set_ui_page.emit(self.work,False, 1, test, "")
+                self.test_rgb_result = False
+                self.currentTestIndex = 0
+
+        elif self.currentTestIndex == self.TestType.lcd.value and self._finish_lcd:
+            if var:
+                self.currentTestIndex += 1
+                self.test_lcd_result = True
+            else:
+                self.signal_set_ui_page.emit(self.work,False, 1, test, "")
+                self.test_lcd_result = False
+                self.currentTestIndex = 0
+
+        elif self.currentTestIndex == self.TestType.btn.value and self._finish_btn:
+            if var:
+                self.currentTestIndex += 1
+                self.test_btn_result = True
+            else:
+                self.signal_set_ui_page.emit(self.work,False, 1, test, "")
+                self.test_btn_result = False
+                self.currentTestIndex = 0
+
+        elif self.currentTestIndex == self.TestType.tf.value and self._finish_tf:
+            if var:
+                self.currentTestIndex += 1
+                self.test_tf_result = True
+            else:
+                self.signal_set_ui_page.emit(self.work,False, 1, "无法读取TF卡", "")
+                self.currentTestIndex = 0
+
+        elif self.currentTestIndex == self.TestType.audio.value and self._sent_audio_cmd:
+            if var:
+                self.currentTestIndex += 1
+            else:
+                self.signal_set_ui_page.emit(self.work,False, 1, "录音播放异常", "")
+                self.currentTestIndex = 0
+
+
+
+    def open_serial_link(self):
+        if not self.port:
+            print("open_serial_link: 未指定端口")
+            return False
+
+        available = [p.portName() for p in QSerialPortInfo.availablePorts()]
+        if self.port not in available:
+            print(f"open_serial_link: 请求的端口 {self.port} 不在可用端口列表: {available}")
+            return False
+
+        try:
+            if self.serial is not None:
+                self._close_serial()
+
+            self.serial = QSerialPort()
+            self.serial.setPortName(self.port)
+            self.serial.setBaudRate(115200)
+            self.serial.setDataBits(QSerialPort.Data8)
+            self.serial.setParity(QSerialPort.NoParity)
+            self.serial.setStopBits(QSerialPort.OneStop)
+            self.serial.setFlowControl(QSerialPort.NoFlowControl)
+
+            if self.serial.open(QIODevice.ReadWrite):
+                print(f"\n成功打开串口: {self.port}")
+                self.signal_set_ui_page.emit(self.work,False, 2, "", "")
+                try:
+                    self.serial.clear()
+                except Exception:
+                    pass
+                time.sleep(0.05)
+
+                try:
+                    self.serial.readyRead.connect(self.on_serial_read)
+                except Exception as e:
+                    print("readyRead connect 异常:", e)
+
+                # reset states
+                self.initVars()
+
+                self.isOpenPort = True
+                QTimer.singleShot(2000, self._start_periodic_write)  # 延迟 2s 启动写定时器
+                return True
+            else:
+                print(f"\n打开串口失败: {self.port}")
+                self.isOpenPort = False
+                return False
+        except Exception as e:
+            print("open_serial_link 异常:", e)
+            self.isOpenPort = False
+            return False
+
+    def _close_serial(self):
+        # 1) 停写定时器，避免并发写
+        try:
+            self._stop_periodic_write()
+        except Exception:
+            pass
+
+        # 2) 标记端口已关闭，避免其它逻辑再尝试写
+        self.isOpenPort = False
+
+        if not self.serial:
+            return
+
+        try:
+            # 3) 断开信号
+            try:
+                self.serial.readyRead.disconnect(self.on_serial_read)
+            except Exception:
+                pass
+
+            # 4) 嘗試短等待 pending bytes 写入排空（可选，短超时）
+            try:
+                self.serial.waitForBytesWritten(200)  # 200 ms
+            except Exception:
+                pass
+
+            # 5) 清理缓冲
+            try:
+                self.serial.clear()
+            except Exception:
+                pass
+
+            # 6) 关闭端口
+            try:
+                self.serial.close()
+            except Exception:
+                pass
+
+            # 7) 释放引用（不要依赖 deleteLater 必须由事件循环处理）
+            try:
+                self.serial = None
+            except Exception:
+                self.serial = None
+
+        finally:
+            # 8) 重置状态标志（按需）
+            self._sent_rgb_cmd = False
+            self._finish_rgb = False
+            self._waiting_rgb_cmd = False
+            self._last_now = 0.0
+            # ... 重置其它标志 ...
+            self._recv_accum = ""
+            self.isOpenPort = False
+
+    def _start_periodic_write(self):
+        if not self.isOpenPort or self.serial is None:
+            return
+        if self._write_timer is None:
+            self._write_timer = QTimer()
+            self._write_timer.timeout.connect(self._on_write_timer)
+            self._write_timer.start(100)
+
+    def _stop_periodic_write(self):
+        if self._write_timer is not None:
+            try:
+                if self._write_timer.isActive():
+                    self._write_timer.stop()
+            except Exception:
+                pass
+            try:
+                self._write_timer.timeout.disconnect(self._on_write_timer)
+            except Exception:
+                pass
+            self._write_timer = None
+            print("写入定时器已停止")
+
+    # 指令发送
+    def _on_write_timer(self):
+        if not self.isOpenPort or self.serial is None:
+            self._stop_periodic_write()
+            return
+
+        now = time.time()
+        if self.currentTestIndex == self.TestType.base_testing.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+            t_cmd = self.cmd_base_testing
+            if not self._finish_battery_test:
+                if self.battery_percent == 0:
+                    self.signal_set_ui_page.emit(self.work, False, 3, t_testPro, "\n\n\n\n\n[电池电量检测]\n发送检测指令中...")
+                cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                if (not self._waiting_battery_test_cmd) or (now - self._last_now > 2.0):
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(200)
+                        except Exception:
+                            pass
+                        self._sent_battery_test_cmd = True
+                        self._waiting_battery_test_cmd = True
+                        self._last_now = now
+                        print(f"[发送] 电池电量检测 cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] 电池电量检测 cmd={t_cmd}")
+            else:
+                time.sleep(3)
+                self.currentTestIndex += 1
+
+        if self.currentTestIndex == self.TestType.audio.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+            t_cmd = self.cmd_audio
+            if not self._finish_audio:
+                cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                if (not self._waiting_audio_cmd) or (now - self._last_now > 7.0):
+                    if self._waiting_audio_cmd and now - self._last_now < 7.0 + 10:
+                        self.signal_set_ui_page.emit(self.work, True, 3, t_testPro,f"\n\n\n\n[录音完成/正在播放]\n{int(18 - (now - self._last_now))}秒后重新录制播放")
+                    else:
+                        try:
+                            bytes_written = self.serial.write(cmd_bytes)
+                            try:
+                                self.serial.waitForBytesWritten(500)
+                            except Exception:
+                                pass
+                            self._sent_audio_cmd = True
+                            self._waiting_audio_cmd = True
+                            self._last_now = now
+                            print(f"[发送] 录音播放 cmd={t_cmd} bytes={bytes_written}")
+                        except Exception:
+                            print(f"[发送失败] 录音播放 cmd={t_cmd}")
+
+                else:
+                    self.signal_set_ui_page.emit(self.work, True, 3, t_testPro,"\n\n\n\n[录音播放测试]\n[正在录音/5秒后播放]\n\n请对麦克风说出:你好,你好")
+
+
+
+        if self.currentTestIndex == self.TestType.rgb.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+            t_cmd = self.cmd_rgb
+            if not self._finish_rgb:
+                self.signal_set_ui_page.emit(self.work, False, 3, t_testPro, "\n\n\n\n\n[RGB灯]\n发送控制指令中...")
+                cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                if (not self._waiting_rgb_cmd) or (now - self._last_now >= 2.0):
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(200)
+                        except Exception:
+                            pass
+                        self._sent_rgb_cmd = True
+                        self._waiting_rgb_cmd = True
+                        self._last_now = now
+                        print(f"[发送] RGB cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] RGB cmd={t_cmd}")
+            else:
+                self.signal_set_ui_page.emit(self.work, True, 3, t_testPro, "\n << < 人工查看 >> >\n\n[RGB灯]\n[充电指示灯]\n\n\n是否点亮?")
+
+        if self.currentTestIndex == self.TestType.lcd.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+            t_cmd = self.cmd_lcd_rgb
+            if not self._finish_lcd:
+                self.signal_set_ui_page.emit(self.work, False, 3, t_testPro, "\n\n\n\n\n[LCD显示屏]\n发送控制指令中...")
+                cmd_bytes = (self.cmd_lcd_rgb + "\r\n").encode('utf-8')
+                if (not self._waiting_lcd_cmd) or (now - self._last_now >= 2.0):
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(200)
+                        except Exception:
+                            pass
+                        self._sent_lcd_cmd = True
+                        self._waiting_lcd_cmd = True
+                        self._last_now = now
+                        self._finish_lcd = True
+                        print(f"[发送] LCD显示屏 cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] LCD显示屏 cmd={t_cmd}")
+            else:
+                self.signal_set_ui_page.emit(self.work, True, 3, t_testPro, "\n << < 人工查看 >> >\n\n[LCD显示屏]\n\n\n\n是否无坏点,无划痕?")
+
+        if self.currentTestIndex == self.TestType.btn.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+            t_cmd = self.cmd_btn
+            if not self._finish_btn:
+                self.signal_set_ui_page.emit(self.work, False, 3, t_testPro, "\n\n\n\n\n[功能按键测试]\n正在检测按键是否按下...")
+                cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                if (not self._waiting_btn_cmd) or (now - self._last_now > 2.0):
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(200)
+                        except Exception:
+                            pass
+                        self._sent_btn_cmd = True
+                        self._waiting_btn_cmd = True
+                        self._last_now = now
+                        print(f"[发送] 功能按键检测 cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] 功能按键检测 cmd={t_cmd}")
+            else:
+                self.Is_Pass_Or_Ng(True)
+
+        if self.currentTestIndex == self.TestType.tf.value:
+            t_testPro = "测试项目" + str(self.currentTestIndex)
+            t_cmd = self.cmd_tf
+            if not self._finish_tf:
+                self.signal_set_ui_page.emit(self.work, False, 3, t_testPro, "\n\n\n\n\n[TF卡自检]\n")
+                cmd_bytes = (t_cmd + "\r\n").encode('utf-8')
+                if (not self._waiting_tf_cmd) or (now - self._last_now >= 2.0):
+                    try:
+                        bytes_written = self.serial.write(cmd_bytes)
+                        try:
+                            self.serial.waitForBytesWritten(500)
+                        except Exception:
+                            pass
+                        self._sent_tf_cmd = True
+                        self._waiting_tf_cmd = True
+                        self._last_now = now
+                        print(f"[发送] TF卡自检 cmd={t_cmd} bytes={bytes_written}")
+                    except Exception:
+                        print(f"[发送失败] TF卡自检 cmd={t_cmd}")
+            else:
+                self.Is_Pass_Or_Ng(self.test_tf_result)
+
+        if self.currentTestIndex == self.TestType.finish.value:
+            self.signal_set_ui_page.emit(self.work, False, 0, f"测试通过", "")
+
+
+    # 指令接收
+    def on_serial_read(self):
+        if not self.serial:
+            return
+        try:
+            qba = self.serial.readAll()
+            chunk = qba.data() if hasattr(qba, "data") else bytes(qba)
+        except Exception:
+            chunk = b''
+            print("serial.readAll() 读取异常")
+        if not chunk:
+            return
+        try:
+            recv_str = chunk.decode('utf-8', errors='replace')
+        except Exception:
+            recv_str = ''
+            print("recv data decode err")
+
+        self._recv_accum += recv_str
+        if len(self._recv_accum) > 3000:
+            self._recv_accum = self._recv_accum[-3000:]
+
+
+        # --------------------------------- 主控 ---------------------------------
+        # 电量检查
+        if self.currentTestIndex == self.TestType.base_testing.value:
+            if not self._finish_battery_test:
+                expected_status = "ok"
+                res = self.contains_confirmation2(self._recv_accum, expected_echo=None, expected_status=expected_status, keys=None)
+                if res is not None:
+                    parsed, end_index = res
+                    t_battery_percent = parsed.get("battery_percent")
+                    if t_battery_percent:
+                        self.battery_percent = t_battery_percent
+                        # 合格判定：60% ~ 90% 放行测试
+                        if 60 <= self.battery_percent <= 90:
+                            t_testPro = "测试项目" + str(self.currentTestIndex)
+                            self.signal_set_ui_page.emit(self.work, False, 3, t_testPro, f"\n\n\n\n\n[电池电量通过]\n当前电量：{self.battery_percent}%")
+                            self._finish_battery_test = True
+                        else:
+                            tip_text = f"[电池电量不合格]\n当前电量：{self.battery_percent}%\n电量要求在70% ~ 90%区间"
+                            self.signal_set_ui_page.emit(self.work, False, 1, tip_text, "")
+
+                        self._recv_accum = self._recv_accum[end_index:]
+                        print(">>>>>>>>收到 电池电量 确认:", f"当前电量:{self.battery_percent}%")
+
+
+        # RGB 检查
+        if self.currentTestIndex == self.TestType.rgb.value:
+            if not self._finish_rgb:
+                expected_echo = self.cmd_rgb
+                expected_json = {"status": "ok"}
+
+                obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo, expected_json=expected_json)
+                if obj is not None:
+                    self._finish_rgb = True
+                    self._waiting_rgb_cmd = False
+                    print(">>>>>>>>收到 RGB 确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+        if self.currentTestIndex == self.TestType.lcd.value:
+            if not self._finish_lcd:
+                expected_echo = self.cmd_lcd_rgb
+                obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo)
+                if obj is not None:
+                    self._finish_lcd = True
+                    self._waiting_lcd_cmd = False
+                    print(">>>>>>>>收到 LCD 确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+
+        if self.currentTestIndex == self.TestType.btn.value:
+            if not self._finish_btn:
+                expected_status = "ok"
+                keys = ["confirm_pressed", "return_pressed", "select_pressed"]
+                res = self.contains_confirmation2(self._recv_accum,expected_echo=None,expected_status=expected_status,keys=keys)
+                if res is not None:
+                    parsed, end_index = res
+                    if not self.confirm_pressed:
+                        self.confirm_pressed = parsed.get("confirm_pressed")
+                    if not self.return_pressed:
+                        self.return_pressed = parsed.get("return_pressed")
+                    if not self.select_pressed:
+                        self.select_pressed = parsed.get("select_pressed")
+
+                    if self.confirm_pressed and self.return_pressed and self.select_pressed:
+                        self._finish_btn = True
+                        self._waiting_btn_cmd = False
+                    # 截断缓冲
+                    self._recv_accum = self._recv_accum[end_index:]
+                    print(">>>>>>>>收到 功能按键确认 JSON:", json.dumps(res, ensure_ascii=False))
+
+
+        if self.currentTestIndex == self.TestType.tf.value:
+            if not self._finish_tf:
+                expected_echo = self.cmd_tf
+                expected_json = {"status": "ok"}
+
+                obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo, expected_json=expected_json)
+                if obj is not None:
+                    self._finish_tf = True
+                    self._waiting_tf_cmd = False
+                    self.test_tf_result = True
+                    print(">>>>>>>>收到 TF卡确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+                expected_json = {"status": "error"}
+                obj = self.contains_confirmation(self._recv_accum, expected_echo=expected_echo, expected_json=expected_json)
+                if obj is not None:
+                    self._finish_tf = True
+                    self._waiting_tf_cmd = False
+                    self.test_tf_result = False
+                    print(">>>>>>>>收到 TF卡确认 JSON:", json.dumps(obj, ensure_ascii=False))
+
+
+
+    # 提取 echo+json 配对（按回显后紧随的 JSON）
+    def extract_echo_json_pairs(self, text: str) -> List[Tuple[str, Dict[str, Any]]]:
+        pairs: List[Tuple[str, Dict[str, Any]]] = []
+        for m in re.finditer(r'(^|\r?\n)\s*(tool\s+call[^\r\n]+)\s*(\r?\n|$)', text, re.I):
+            echo = m.group(2).strip()
+            search_start = m.end()
+            jm = re.search(r'\{.*?\}', text[search_start:], re.S)
+            if not jm:
+                continue
+            jtext = jm.group(0)
+            try:
+                obj = json.loads(jtext)
+            except Exception:
+                continue
+            pairs.append((echo, obj))
+        return pairs
+
+    def json_matches(self, obj: Dict[str, Any], expected: Dict[str, Any]) -> bool:
+        def _match_val(val, exp) -> bool:
+            if callable(exp):
+                try:
+                    return bool(exp(val))
+                except Exception:
+                    return False
+            if isinstance(exp, dict):
+                if not isinstance(val, dict):
+                    return False
+                return all(_match_val(val.get(k), v) for k, v in exp.items())
+            if isinstance(exp, (list, tuple)):
+                if not isinstance(val, (list, tuple)) or len(val) != len(exp):
+                    return False
+                return all(_match_val(a, b) for a, b in zip(val, exp))
+            try:
+                return val == exp
+            except Exception:
+                return False
+        return all(_match_val(obj.get(k), v) for k, v in expected.items())
+
+
+    def extract_json_objects(self, text: str) -> List[Dict[str, Any]]:
+        """返回文本中能解析的所有 JSON 对象（按出现顺序）。"""
+        objs: List[Dict[str, Any]] = []
+        for m in re.finditer(r'\{.*?\}', text, re.S):
+            j = m.group(0)
+            try:
+                obj = json.loads(j)
+                if isinstance(obj, dict):
+                    objs.append(obj)
+            except Exception:
+                continue
+        return objs
+
+    def json_matches(self, obj: Dict[str, Any], expected: Dict[str, Any]) -> bool:
+        """
+        宽松匹配：expected 的值可以是常量、可调用或 'true'/'false' 字符串。
+        - 如果 expected 为 'true'/'false'（字符串），会接受 obj 中为 True/False 或 "true"/"false" 或 1/0。
+        - 数字/字符串会用 str() 比较（便于 "119" vs 119 的情况）。
+        - 嵌套 dict/list 会递归比较。
+        """
+
+        def _match_val(val, exp) -> bool:
+            # callable
+            if callable(exp):
+                try:
+                    return bool(exp(val))
+                except Exception:
+                    return False
+
+            # expected is 'true'/'false' string -> accept bool/str/int
+            if isinstance(exp, str) and exp.lower() in ("true", "false"):
+                exp_bool = (exp.lower() == "true")
+                if isinstance(val, bool):
+                    return val == exp_bool
+                if isinstance(val, str):
+                    return val.lower() == exp.lower()
+                if isinstance(val, (int, float)):
+                    # treat 0 as False, others as True
+                    return bool(val) == exp_bool
+                return False
+
+            # nested dict
+            if isinstance(exp, dict):
+                if not isinstance(val, dict):
+                    return False
+                return all(_match_val(val.get(k), v) for k, v in exp.items())
+
+            # list/tuple expected
+            if isinstance(exp, (list, tuple)):
+                if not isinstance(val, (list, tuple)) or len(val) != len(exp):
+                    return False
+                return all(_match_val(a, b) for a, b in zip(val, exp))
+
+            # loose numeric/string compare: try direct equality first, then str() compare
+            try:
+                if val == exp:
+                    return True
+            except Exception:
+                pass
+            try:
+                return str(val) == str(exp)
+            except Exception:
+                return False
+
+        return all(_match_val(obj.get(k), v) for k, v in expected.items())
+
+    def extract_json_objects_positions(self, text: str) -> List[Tuple[Dict[str, Any], int, int]]:
+        objs = []
+        for m in re.finditer(r'\{.*?\}', text, re.S):
+            start = m.start()
+            end = m.end()
+            j = m.group(0)
+            try:
+                obj = json.loads(j)
+                if isinstance(obj, dict):
+                    objs.append((obj, start, end))
+            except Exception:
+                continue
+        return objs
+
+    def contains_confirmation(self, text: str,
+                              expected_echo: Optional[str] = None,
+                              expected_json: Optional[Dict[str, Any]] = None) -> Optional[Tuple[Dict[str, Any], int]]:
+
+        # Helper json match (reuse your json_matches if present)
+        def _json_ok(obj, exp) -> bool:
+            if exp is None:
+                return obj.get("status") == "ok"
+            return self.json_matches(obj, exp)
+
+        # Case A: expected_echo specified -> find occurrences of that literal substring
+        if expected_echo is not None:
+            # find all literal occurrences (not regex) to be robust
+            start_pos = 0
+            esc = re.escape(expected_echo)
+            for m in re.finditer(esc, text):
+                # search for first JSON after this echo occurrence
+                search_start = m.end()
+                jm = re.search(r'\{.*?\}', text[search_start:], re.S)
+                if not jm:
+                    continue
+                json_text = jm.group(0)
+                json_abs_end = search_start + jm.end()
+                try:
+                    obj = json.loads(json_text)
+                except Exception:
+                    continue
+                if _json_ok(obj, expected_json):
+                    return obj, json_abs_end
+            return None
+
+        # Case B: expected_echo is None -> JSON-only scan
+        json_objs = self.extract_json_objects_positions(text)
+        if not json_objs:
+            return None
+        for obj, start, end in json_objs:
+            if _json_ok(obj, expected_json):
+                return obj, end
+        return None
+
+
+    def extract_json_objects_positions(self, text: str) -> List[Tuple[Dict[str, Any], int, int]]:
+        """返回文本中所有可解析 JSON 的三元组 (obj, start_index, end_index)。"""
+        objs: List[Tuple[Dict[str, Any], int, int]] = []
+        for m in re.finditer(r'\{.*?\}', text, re.S):
+            start = m.start()
+            end = m.end()
+            j = m.group(0)
+            try:
+                obj = json.loads(j)
+                if isinstance(obj, dict):
+                    objs.append((obj, start, end))
+            except Exception:
+                continue
+        return objs
+
+    def extract_echo_json_pairs_positions(self, text: str) -> List[Tuple[str, Dict[str, Any], int, int]]:
+        """
+        返回所有 (echo, json_obj, echo_start_index, json_end_index)
+        echo_start_index 以便需要时做更精确的截断或调试
+        """
+        pairs: List[Tuple[str, Dict[str, Any], int, int]] = []
+        for m in re.finditer(r'(^|\r?\n)\s*(tool\s+call[^\r\n]+)\s*(\r?\n|$)', text, re.I):
+            echo = m.group(2).strip()
+            echo_start = m.start(2)
+            search_start = m.end()
+            jm = re.search(r'\{.*?\}', text[search_start:], re.S)
+            if not jm:
+                continue
+            json_abs_start = search_start + jm.start()
+            json_abs_end = search_start + jm.end()
+            jtext = jm.group(0)
+            try:
+                obj = json.loads(jtext)
+            except Exception:
+                continue
+            pairs.append((echo, obj, echo_start, json_abs_end))
+        return pairs
+
+    def contains_confirmation2(self,
+                               text: str,
+                               expected_echo: Optional[str] = None,
+                               expected_status: Optional[str] = None,
+                               keys: Optional[List[str]] = None
+                               ) -> Optional[Tuple[Dict[str, Any], int]]:
+
+        def to_number(v) -> Optional[float]:
+            if v is None:
+                return None
+            if isinstance(v, bool):
+                return 1.0 if v else 0.0
+            if isinstance(v, (int, float)):
+                return float(v)
+            if isinstance(v, str):
+                s = v.strip()
+                # try direct float
+                try:
+                    return float(s)
+                except Exception:
+                    pass
+                # try extract first numeric substring
+                m = re.search(r'-?\d+(?:\.\d+)?', s)
+                if m:
+                    try:
+                        return float(m.group(0))
+                    except Exception:
+                        return None
+                return None
+            return None
+
+        def to_number_or_array(v):
+            # if list/tuple => convert each element
+            if isinstance(v, (list, tuple)):
+                nums = []
+                for e in v:
+                    ne = to_number(e)
+                    if ne is None:
+                        return None
+                    nums.append(ne)
+                return nums
+            # scalar
+            return to_number(v)
+
+        # helper to check status
+        def status_ok(obj):
+            if expected_status is None:
+                return True
+            s = obj.get("status")
+            if s is None:
+                return False
+            return str(s).lower() == str(expected_status).lower()
+
+        # Mode A: echo specified -> find occurrences and pair with next JSON
+        if expected_echo is not None:
+            esc = re.escape(expected_echo)
+            for m in re.finditer(esc, text):
+                search_start = m.end()
+                jm = re.search(r'\{.*?\}', text[search_start:], re.S)
+                if not jm:
+                    continue
+                json_text = jm.group(0)
+                json_end = search_start + jm.end()
+                try:
+                    obj = json.loads(json_text)
+                except Exception:
+                    continue
+                if not status_ok(obj):
+                    continue
+                # if no keys requested, return full obj
+                if not keys:
+                    return obj, json_end
+                result: Dict[str, Any] = {}
+                ok = True
+                for k in keys:
+                    if k not in obj:
+                        ok = False
+                        break
+                    val = to_number_or_array(obj.get(k))
+                    if val is None:
+                        ok = False
+                        break
+                    result[k] = val
+                if ok:
+                    return result, json_end
+            return None
+
+        # Mode B: JSON-only scan
+        json_objs = self.extract_json_objects_positions(text)
+        if not json_objs:
+            return None
+        for obj, start, end in json_objs:
+            if not status_ok(obj):
+                continue
+            if not keys:
+                return obj, end
+            result: Dict[str, Any] = {}
+            ok = True
+            for k in keys:
+                if k not in obj:
+                    ok = False
+                    break
+                val = to_number_or_array(obj.get(k))
+                if val is None:
+                    ok = False
+                    break
+                result[k] = val
+            if ok:
+                return result, end
+        return None
+
+    def parse_sequential_ext_pin_levels(self,
+                                        text: str,
+                                        pins: Optional[List[str]] = None,
+                                        command_keyword: str = "test_ext_pin",
+                                        expected_status: Optional[str] = "ok"
+                                        ) -> Optional[Tuple[List[int], int]]:
+        if pins is None:
+            pins = ["P0", "P1", "P2", "P3"]
+        cur = 0
+        levels: List[int] = []
+        # 宽松匹配每一条 echo（允许有前缀如 "x_card> "）
+        for pin in pins:
+            # 找到包含 command_keyword 且包含 pin=Px 的 echo 行（从 cur 开始）
+            pat = re.compile(r'(^|\r?\n)([^\r\n]*\btool\s+call\s+' + re.escape(command_keyword) +
+                             r'[^\r\n]*\bpin=' + re.escape(pin) + r'\b[^\r\n]*)', re.I)
+            m = pat.search(text, cur)
+            if not m:
+                return None
+            echo_end = m.end(2)
+            # 在 echo 之后寻找第一个完整 JSON
+            jm = re.search(r'\{.*?\}', text[echo_end:], re.S)
+            if not jm:
+                return None
+            json_text = jm.group(0)
+            json_end = echo_end + jm.end()
+            # 解析 JSON
+            try:
+                obj = json.loads(json_text)
+            except Exception:
+                return None
+            # 检查 status（如配置）
+            if expected_status is not None:
+                s = obj.get("status")
+                if s is None or str(s).lower() != str(expected_status).lower():
+                    return None
+            # 确认 JSON 中的 pin 与期望 pin 匹配（更稳健）
+            obj_pin = obj.get("pin")
+            if obj_pin is None or str(obj_pin).upper() != pin.upper():
+                return None
+            # 提取 level 并转为 int
+            lev = obj.get("level")
+            try:
+                level_int = int(lev)
+            except Exception:
+                try:
+                    level_int = int(float(str(lev).strip()))
+                except Exception:
+                    return None
+            levels.append(level_int)
+            # 下一次从当前 json 结束位置继续查找（保证顺序）
+            cur = json_end
+        # 全部找到
+        return levels, cur
+
+    def run(self):
+        self._check_timer = QTimer()
+        self._check_timer.timeout.connect(self._periodic_check)
+        self._check_timer.start(100)
+        self.exec_()
+        if self.isOpenPort:
+            self._close_serial()
+
+
+    def _periodic_check(self):
+        try:
+            self.signal_get_work_com.emit(self.work)
+        except Exception:
+            pass
+        if not self.isStart:
+            if self.isOpenPort:
+                print("isStart False，关闭端口")
+                self._close_serial()
+            return
+        if self.isStart and not self.isOpenPort:
+            if not self.port:
+                return
+            available = [p.portName() for p in QSerialPortInfo.availablePorts()]
+            if self.port in available:
+                self.open_serial_link()
+            else:
+                pass
+        else:
+            if self.isOpenPort and self.serial and self.serial.portName() != self.port:
+                self.signal_set_ui_page.emit(self.work,False, 2, "", "")
+                print("端口名称变化，重启串口")
+                self._close_serial()
+
+    def stop(self):
+        # 停止检查定时器
+        try:
+            if self._check_timer and self._check_timer.isActive():
+                self._check_timer.stop()
+        except Exception:
+            pass
+
+        # 停止写定时器（立即）
+        try:
+            self._stop_periodic_write()
+        except Exception:
+            pass
+
+        # 确保在串口所属线程中同步关闭串口（若已打开）
+        try:
+            if self.isOpenPort:
+                if QThread.currentThread() == self.thread():
+                    # 已经在本线程，直接关闭
+                    self._close_serial()
+                else:
+                    # 在其它线程（通常是主线程）调用，使用阻塞队列调用确保 _close_serial 在本线程执行完
+                    QMetaObject.invokeMethod(self, "_close_serial", Qt.BlockingQueuedConnection)
+        except Exception:
+            # 兜底
+            try:
+                self._close_serial()
+            except Exception:
+                pass
+
+        # 退出事件循环并等待线程结束（短等待）
+        try:
+            self.quit()
+            # 等待线程退出一段时间以让 deleteLater/清理完成
+            self.wait(500)  # 500 ms，可根据需要调整/移除
+        except Exception:
+            pass
+
+
 # 读取MAC线程
 class ReadMac_Thread(QThread):
     updataMac = pyqtSignal(str)
@@ -4511,13 +9493,6 @@ class ReadMac_Thread(QThread):
             self.serial.readyRead.connect(self.on_serial_read)
         else:
             self.serial.close()
-            #msg = f"连接串口错误,请重试 {self.port}"  # 无法连接到端口上的设备
-            #msgbox = QMessageBox()
-            #msgbox.setIcon(QMessageBox.Critical)
-            #msgbox.setWindowTitle("串口错误")
-            #msgbox.setText(msg)
-            #msgbox.setStandardButtons(QMessageBox.Yes)
-            #msgbox.exec_()
 
     # 提取串口数据
     def collect_mac_data(self, recv_str):
@@ -4543,7 +9518,6 @@ class ReadMac_Thread(QThread):
             self.collect_mac_data(recv_str)
 
 
-
 # 读取测试信息线程
 class TestInfo_Thread(QThread):
     startBindingMac = pyqtSignal(str)
@@ -4551,24 +9525,6 @@ class TestInfo_Thread(QThread):
     def __init__(self, _port):
         super(TestInfo_Thread, self).__init__()
         self.port = _port
-
-    def DDopen_serial_link2(self):
-        time.sleep(1)
-        # 先创建并配置串口对象，再打开
-        self.serial = QSerialPort()  # 串口类
-        self.repl = Repl(self.serial)
-        self.serial.setPortName(self.port)  # 设置端口
-        self.serial.setBaudRate(115200)  # 设置波特率
-        self.serial.setDataBits(QSerialPort.Data8)  # 数据位
-        self.serial.setParity(QSerialPort.NoParity)  # 校验位
-        self.serial.setStopBits(QSerialPort.OneStop)  # 停止位
-        self.serial.setFlowControl(QSerialPort.NoFlowControl)  # 设置流量控制
-
-        # 尝试打开串口
-        if self.serial.open(QIODevice.ReadWrite):
-            # 绑定数据读取事件 - 确保在打开串口后连接信号
-            self.serial.setDataTerminalReady(True);
-            self.serial.readyRead.connect(self.on_serial_read)
 
     def open_serial_link(self):
         time.sleep(1)
@@ -4687,14 +9643,11 @@ class TestInfo_Thread(QThread):
 
 
 
-
-
 def get_motherboard_serial():
     c = wmi.WMI()
     for board in c.Win32_BaseBoard():
         return board.SerialNumber.strip()
     return None
-
 
 
 def generate_machine_code(base_str):
@@ -4711,10 +9664,8 @@ def generate_key(machine_code):
 
 def verify(machine_code, key):
     """验证密钥是否匹配机器码"""
-    expected_key = generate_key(machine_code)
-    return key == expected_key
-
-
+    t_key = generate_key(machine_code)
+    return key == t_key
 
 
 def get_file_creation_time(file_path):
@@ -4754,7 +9705,25 @@ def get_file_creation_time(file_path):
 
 
 
+def get_file_creation_time(file_path: Union[str, os.PathLike]):
+    """
+    返回文件的最后修改时间（st_mtime），格式 'YYYY-MM-DD HH:MM:SS'。
+    如果获取失败或文件不存在，返回 " "。
+    """
+    try:
+        if not os.path.exists(file_path):
+            return " "
 
+        st = os.stat(file_path)
+        mod_ts = st.st_mtime  # 使用修改时间
+
+        dt_obj = datetime.datetime.fromtimestamp(mod_ts)
+        return dt_obj.strftime("%Y-%m-%d %H:%M:%S")
+
+    except PermissionError:
+        return " "
+    except Exception:
+        return " "
 
 class StartHmiWindow(QDialog):
 
@@ -4794,6 +9763,20 @@ class StartHmiWindow(QDialog):
             Qt.WindowStaysOnTopHint
         )
 
+        self.ui.combo_project.addItem("7001_盛思_掌控板1.0")
+        self.ui.combo_project.addItem("7001_讯飞实验箱_小学版")
+        self.ui.combo_project.addItem("7001_讯飞实验箱_初中版")
+        self.ui.combo_project.addItem("7001_盛思_信息科技示教板")
+        self.ui.combo_project.addItem("7005_盛思_掌控板_学境1.0")
+        self.ui.combo_project.addItem("7005_盛思_模块_学境")
+        self.ui.combo_project.addItem("7007_盛思_掌控板_单板")
+        self.ui.combo_project.addItem("7009_盛思_乐动掌控2.0")
+        self.ui.combo_project.addItem("7010_盛思_掌控板_学境2.0")
+        self.ui.combo_project.addItem("7011_讯飞_X-CARD_主控")
+        self.ui.combo_project.addItem("7011_讯飞_X-CARD_底座")
+        #self.ui.combo_project.addItem("SN码绑定MAC地址")
+
+
         self.setFixedSize(self.size())  # 固定为当前大小
         self.ui.code_lineEdit.setReadOnly(True)  # 用户可以看到内容但无法编辑
 
@@ -4820,27 +9803,33 @@ class StartHmiWindow(QDialog):
 
         self.ui.combo_project.currentIndexChanged.connect(
             lambda index: (
-                # 处理index=6的情况
+                # index == ProjectType.sn_mac.val1 的情况
                 (self.ui.combo_stage.clear(),
-                 self.ui.combo_stage.addItems(["7008_1956主控"]),
+                 self.ui.combo_stage.addItems(["7008_1956主控","7009_乐动掌控2.0"]),
                  self.ui.combo_stage.setCurrentIndex(0),
-                 self.ui.combo_stage.setEnabled(True)) if index == 6 else
-                # 处理index=5的情况
+                 self.ui.combo_stage.setEnabled(True)) if index == ProjectType.sn_mac.val1 else
+                # index == ProjectType.v7009.val1
                 (self.ui.combo_stage.clear(),
                  self.ui.combo_stage.addItems(["半成品测试", "盛思_成品测试", "讯飞_成品测试"]),
                  self.ui.combo_stage.setCurrentIndex(0),
-                 self.ui.combo_stage.setEnabled(True)) if index == 5 else
+                 self.ui.combo_stage.setEnabled(True)) if index == ProjectType.v7009.val1 else
+                # index == ProjectType.v7011.val1
+                (self.ui.combo_stage.clear(),
+                 self.ui.combo_stage.addItems(["1拖4_半成品测试", "成品测试"]),
+                 self.ui.combo_stage.setCurrentIndex(0),
+                 self.ui.combo_stage.setEnabled(True)) if index == ProjectType.v7011.val1 else
                 # 处理其他情况
                 (self.ui.combo_stage.clear(),
                  self.ui.combo_stage.addItems(["半成品测试", "成品测试"]),
-                 self.ui.combo_stage.setCurrentIndex(1) if index in [ProjectType.x7001.value,
-                                                                     ProjectType.c7001.value,
-                                                                     ProjectType.v7007.value,
-                                                                     ProjectType.m7005.value,
-                                                                     ProjectType.v7005.value,
-                                                                     ProjectType.v260Teach.value,
-                                                                     ProjectType.v260Zkb.value] else None,
-                 self.ui.combo_stage.setEnabled(index not in [ProjectType.x7001.value,ProjectType.c7001.value,ProjectType.v7007.value, ProjectType.m7005.value,ProjectType.v260Teach.value,ProjectType.v7005.value,ProjectType.v260Zkb.value]))
+                 self.ui.combo_stage.setCurrentIndex(1) if index in [ProjectType.x7001.val1,
+                                                                     ProjectType.c7001.val1,
+                                                                     ProjectType.v7007.val1,
+                                                                     ProjectType.m7005.val1,
+                                                                     ProjectType.v7005.val1,
+                                                                     ProjectType.v7010.val1,
+                                                                     ProjectType.v260Teach.val1,
+                                                                     ProjectType.v260Zkb.val1,] else None,
+                 self.ui.combo_stage.setEnabled(index not in [ProjectType.x7001.val1,ProjectType.c7001.val1,ProjectType.v7007.val1, ProjectType.m7005.val1,ProjectType.v260Teach.val1,ProjectType.v7005.val1,ProjectType.v260Zkb.val1,ProjectType.v7010.val1]))
             )
         )
 
@@ -4878,10 +9867,9 @@ class StartHmiWindow(QDialog):
     @pyqtSlot()
     def on_button_confirm_clicked(self):
         global g_MyWin,g_project,g_test_mode
-        g_project = self.ui.combo_project.currentIndex()
+        g_project = ProjectType.from_val1(self.ui.combo_project.currentIndex()).val2
         g_test_mode = self.ui.combo_stage.currentIndex()
         self.close()
-
 
 
         g_MyWin = MyMainWindow()
@@ -4909,14 +9897,7 @@ def turn_on_display():
     ctypes.windll.user32.SendMessageW(0xFFFF, 0x0112, 0xF170, -1)
 
 
-# # 使用示例
-# if __name__ == "__main__":
-#     #print("关闭显示器")
-#     #turn_off_display()
-#     #print("关闭显示器OK")
-#     print("打开显示器")
-#     turn_on_display()
-#     print("显示器已打开")
+
 
 
 if __name__ == "__main__":

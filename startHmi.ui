@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string> </string>
+   <string/>
   </property>
   <layout class="QGridLayout" name="gridLayout">
    <item row="0" column="0">
@@ -82,51 +82,6 @@
                   <height>25</height>
                  </size>
                 </property>
-                <item>
-                 <property name="text">
-                  <string>7001_讯飞实验箱_小学版</string>
-                 </property>
-                </item>
-                <item>
-                 <property name="text">
-                  <string>7001_讯飞实验箱_初中版</string>
-                 </property>
-                </item>
-                <item>
-                 <property name="text">
-                  <string>7005_掌控板_学境</string>
-                 </property>
-                </item>
-                <item>
-                 <property name="text">
-                  <string>7005_模块_学境</string>
-                 </property>
-                </item>
-                <item>
-                 <property name="text">
-                  <string>7007_掌控板_单板</string>
-                 </property>
-                </item>
-                <item>
-                 <property name="text">
-                  <string>7009_乐动掌控2.0</string>
-                 </property>
-                </item>
-                <item>
-                 <property name="text">
-                  <string>SN绑定MAC地址</string>
-                 </property>
-                </item>
-                <item>
-                 <property name="text">
-                  <string>TS260_信息科技示教板</string>
-                 </property>
-                </item>
-                <item>
-                 <property name="text">
-                  <string>TS260_掌控板</string>
-                 </property>
-                </item>
                </widget>
               </item>
              </layout>

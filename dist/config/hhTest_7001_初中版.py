@@ -86,10 +86,10 @@ def WifiCommTest():
 
 
 def record():
-    time.sleep(0.5)
-    audio.record('2.wav', 3, 8, 2, 16000)
-    time.sleep(3)
-    audio.play('2.wav')
+    print("record_1")
+    audio.play('GuangboTicao.mp3')
+    print("record_2")
+    time.sleep(5)
 
 
 
@@ -201,6 +201,7 @@ while True:
         for freq in range(0, 3, 1):
             music.pitch(400, 90)
             time.sleep(0.1)
+        time.sleep(0.5)
         record()
         btn_a = 0
         btn_b = 0

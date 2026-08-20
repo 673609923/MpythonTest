@@ -5,12 +5,8 @@ import machine, music,audio
 import ustruct,os
 import _thread
 
-# WIFI_SSID = "TP-LINK_C5AB"
-# WIFI_PASSWORD = ""
-
-
-WIFI_SSID = "CYZN_Employee_7#10F"
-WIFI_PASSWORD = "Sene@2024"
+WIFI_SSID = "TP-LINK_C5AB"
+WIFI_PASSWORD = ""
 
 g_wifi_comm_state = 0
 g_wifi_comm_dBm = 0

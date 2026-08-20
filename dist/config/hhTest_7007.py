@@ -7,8 +7,8 @@ import _thread
 import network
 import socket
 import urequests
-from mpython import *
 import lcd 
+import gc;gc.collect()
 
 WIFI_SSID = "TP-LINK_C5AB"
 WIFI_PASSWORD = ""
@@ -33,14 +33,9 @@ p1 = MPythonPin(1, PinMode.OUT)  # OK
 p2 = MPythonPin(2, PinMode.OUT)  # OK
 p3 = MPythonPin(3, PinMode.OUT)  # OK
 p4 = MPythonPin(4, PinMode.OUT)  # OK
-# p5 = MPythonPin(5, PinMode.OUT)        # TypeError: P5 or P11 is used for internal A B key.
 p6 = MPythonPin(6, PinMode.OUT)  # OK
-# p7 = MPythonPin(7, PinMode.OUT)        # TypeError: P21 is used for internal RGB LED.
 p8 = MPythonPin(8, PinMode.OUT)  # OK
 p9 = MPythonPin(9, PinMode.OUT)  # OK
-# p10 = MPythonPin(10, PinMode.OUT)      # TypeError: P10 is used for internalsound sensor
-# p11 = MPythonPin(11, PinMode.OUT)      # TypeError: P5 or P11 is used for internal A B key.
-# p12 = MPythonPin(12, PinMode.OUT)      # TypeError: P12 is used for internal buzzer.
 p13 = MPythonPin(13, PinMode.OUT)  # OK
 p14 = MPythonPin(14, PinMode.OUT)  # OK
 p15 = MPythonPin(15, PinMode.OUT)  # OK
@@ -51,6 +46,9 @@ FREQ = 2000
 FREQ_RNAG = 0.2
 PEAK = 6000
 
+# MAC id
+machine_id = ubinascii.hexlify(machine.unique_id()).decode().upper()
+print('Mac:{}'.format(machine_id.upper()))  # MAC地址
 
 def connect_wifi():
     global wlan
@@ -111,42 +109,39 @@ def analysis_wav(file='test.wav'):
 
 
 def record():
-    audio.record('1.wav', 3, 16, 2, 16000)
+    print("------ record 1")
+    audio.recorder_init(i2c)
+    print("------ record 2")
+    audio.record("temp.wav", 3)
+    print("------ record 3")
+    audio.recorder_deinit()
+    print("------ record 4")
     time.sleep(1)
-    audio.play('1.wav')
+    print("------ record 5")
+    audio.player_init(i2c)
+    print("------ record 6")
+    audio.play('temp.wav')
     time.sleep(3)
+    print("------ record 7")
+    audio.player_deinit()
+    print("------ record 8")
 
 
-def play_wave(freq):
-    global P8
-    P8 = MPythonPin(8, PinMode.PWM)
-    P8.write_analog(512, freq)
-
-
-def stop_wave():
-    global P8
-    P8.pwm.deinit()
-
-
-# MAC id
-machine_id = ubinascii.hexlify(machine.unique_id()).decode().upper()
 
 
 def on_button_a_pressed(_):
-    time.sleep(0.5)
     print("------ A键")
     music.pitch(400, 100)
-    time.sleep(1)
+    time.sleep(0.5)
     global btn_a
     btn_a = 1
 
 
 # button B
 def on_button_b_pressed(_):
-    time.sleep(0.5)
     print("------ B键")
     music.pitch(400, 100)
-    time.sleep(1)
+    time.sleep(0.5)
     global btn_b
     btn_b = 1
 
@@ -223,10 +218,8 @@ def Rgb_Neopixel():
     p3.write_digital(g_GPIO_State)
     p4.write_digital(g_GPIO_State)
     p6.write_digital(g_GPIO_State)
-    # p7.write_digital(1)
     p8.write_digital(g_GPIO_State)
     p9.write_digital(g_GPIO_State)
-    # p10.write_digital(1)
     p13.write_digital(g_GPIO_State)
     p14.write_digital(g_GPIO_State)
     p15.write_digital(g_GPIO_State)
@@ -245,7 +238,7 @@ while True:
     g_GetDataLock.acquire()
 
     if btn_a and btn_b:
-        time.sleep(0.5)
+        time.sleep(0.2)
         for freq in range(0, 3, 1):
             music.pitch(400, 90)
             time.sleep(0.1)
@@ -273,8 +266,6 @@ while True:
     print('Mac:{}'.format(machine_id.upper()))  # MAC地址
 
     g_GetDataLock.release()
-
-
     time.sleep(0.5)
 
 

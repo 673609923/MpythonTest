@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-# Form implementation generated from reading ui file 'E:\desktop\项目\掌控板测试软件\MpythonTest_7001\MpythonTest_7001\startHmi.ui'
+# Form implementation generated from reading ui file 'E:\desktop\mpythonTest\MpythonTest\startHmi.ui'
 #
 # Created by: PyQt5 UI code generator 5.11.2
 #
@@ -12,6 +12,7 @@ class Ui_startHmi(object):
     def setupUi(self, startHmi):
         startHmi.setObjectName("startHmi")
         startHmi.resize(306, 171)
+        startHmi.setWindowTitle("")
         self.gridLayout = QtWidgets.QGridLayout(startHmi)
         self.gridLayout.setObjectName("gridLayout")
         self.stackedWidget = QtWidgets.QStackedWidget(startHmi)
@@ -52,15 +53,6 @@ class Ui_startHmi(object):
         self.combo_project.setSizePolicy(sizePolicy)
         self.combo_project.setMinimumSize(QtCore.QSize(0, 25))
         self.combo_project.setObjectName("combo_project")
-        self.combo_project.addItem("")
-        self.combo_project.addItem("")
-        self.combo_project.addItem("")
-        self.combo_project.addItem("")
-        self.combo_project.addItem("")
-        self.combo_project.addItem("")
-        self.combo_project.addItem("")
-        self.combo_project.addItem("")
-        self.combo_project.addItem("")
         self.horizontalLayout.addWidget(self.combo_project)
         self.verticalLayout.addLayout(self.horizontalLayout)
         self.horizontalLayout_2 = QtWidgets.QHBoxLayout()
@@ -173,17 +165,7 @@ class Ui_startHmi(object):
 
     def retranslateUi(self, startHmi):
         _translate = QtCore.QCoreApplication.translate
-        startHmi.setWindowTitle(_translate("startHmi", " "))
         self.label.setText(_translate("startHmi", "项目: "))
-        self.combo_project.setItemText(0, _translate("startHmi", "7001_讯飞实验箱_小学版"))
-        self.combo_project.setItemText(1, _translate("startHmi", "7001_讯飞实验箱_初中版"))
-        self.combo_project.setItemText(2, _translate("startHmi", "7005_掌控板_学境"))
-        self.combo_project.setItemText(3, _translate("startHmi", "7005_模块_学境"))
-        self.combo_project.setItemText(4, _translate("startHmi", "7007_掌控板_单板"))
-        self.combo_project.setItemText(5, _translate("startHmi", "7009_乐动掌控2.0"))
-        self.combo_project.setItemText(6, _translate("startHmi", "SN绑定MAC地址"))
-        self.combo_project.setItemText(7, _translate("startHmi", "TS260_信息科技示教板"))
-        self.combo_project.setItemText(8, _translate("startHmi", "TS260_掌控板"))
         self.label_2.setText(_translate("startHmi", "阶段: "))
         self.combo_stage.setItemText(0, _translate("startHmi", "半成品测试"))
         self.combo_stage.setItemText(1, _translate("startHmi", "成品测试"))

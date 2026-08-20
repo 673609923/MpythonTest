@@ -23,8 +23,8 @@ rfid = Rfid(i2c = i2c, i2c_addr = 47)
 
     
 
-WIFI_SSID = "TP-LINK_C5AB"
-WIFI_PASSWORD = ""
+WIFI_SSID = "xf123456"
+WIFI_PASSWORD = "88888888"
 
 
 wlan = network.WLAN(network.STA_IF)
@@ -76,15 +76,13 @@ def WifiCommTest():
             g_wifi_comm_state = 1
             return
 
+   
 
 
 def record():
     print("record_1")
-    audio.record('1.wav', 5, 8, 2, 16000)
+    audio.play('GuangboTicao.mp3')
     print("record_2")
-    print("record_3")
-    audio.play('1.wav')
-    print("record_4")
     time.sleep(5)
     
 
@@ -155,9 +153,6 @@ def Rgb_Neopixel():
 
 def Servo_Neopixel():
     
-    sensor.snapshot()
-    sensor.free_fb()
-    
     global g_Servo_Index
     global g_Servo_Direction  # 1 表示递增，-1 表示递减
     
@@ -206,82 +201,38 @@ def check_list_length(lst, expected_length):
 
 while True:
     g_GetDataLock.acquire()
-
+    
+    sensor.snapshot()
+    sensor.free_fb()
+    
     if btn_a and btn_b:
         time.sleep(0.5)
         for freq in range(0, 3, 1):
             music.pitch(400, 90)
             time.sleep(0.1)
+        time.sleep(0.5)
         record()
+        encoder_motor.turn_angle(3,50,360)
+        time.sleep(7)
+        encoder_motor.turn_angle(4,50,360)
+        time.sleep(7)
+        encoder_motor.move_distance(50,20)
+        time.sleep(3)
+        encoder_motor.move(0,0)
         btn_a = 0
         btn_b = 0
+        
     print("----------------------------")
     
     if g_wifi_comm_state:
         g_wifi_comm_dBm = get_signal_strength()
         
-    light_value = light.read()
-    sound_value = sound.read()
-    ultrasound_value = get_distance()
-    ir1_value = ir1.read()
-    ir2_value = ir2.read()
-    pot_value = pot.read()
-    rfid_value = str(rfid.get_serial_num())
-    temperature_value = int(sht20.temperature())
-    humiture_value = int(sht20.humidity())
 
-    tracking_value = tracking.get_val()
-    SdaScl_value = int(check_list_length(i2c.scan(),8))
-    
-    
-    
-    # 光线
-    print('light:%d' % light_value)                     
-    
-    # 声音
-    print('Sound:%d' % sound_value)                     
-    
-    # 超声波
-    print('Ultrasound:%d' % ultrasound_value)           
-    
-    # 红外探测
-    print('Ir1:%d,Ir2:%d' % (ir1_value,ir2_value))      
-    
-    # 旋钮电位器
-    print('Pot:%d' % pot_value)                         
-    
-    # RFID
-    print('Rfid:%s' % rfid_value)                       
-    
-    # 温度
-    print('Humiture:%d' % temperature_value)  
-    
-    # 湿度
-    print('Temperature:%d' % humiture_value)   
-    
-    # 循迹
-    print('Tracking:%d,%d,%d,%d,%d' % (tracking_value[0],tracking_value[1],tracking_value[2],tracking_value[3],tracking_value[4]))      
-    
     # WIFI
     print('Wifi:%d,Name:%s,Pass:%s' % (g_wifi_comm_dBm, WIFI_SSID, WIFI_PASSWORD))  
-    
-    # MAC地址
-    print('Mac:{}'.format(machine_id.upper()))          
-
-    # SDA/SCL
-    print('SdaScl:%d' % SdaScl_value)            
-
-    # 左右电机转动
-    #encoder_motor.move(-60,60)
-    
-    # 风扇
-    set_speed(1, 10)
-    
-    #水泵
-    set_speed(2, 200)  
+    time.sleep(0.5)
     
     g_GetDataLock.release()
-    
-    time.sleep(0.5)
+
 
 
